@@ -27,7 +27,7 @@ test('external auth offers relative same-origin sign-in only when reachable Plex
   let available = true;
   const { server, close } = createApp({
     plex: { canAccess: async () => available, streams: new Map(), stop: async () => {} },
-    authenticateOwner: async cookie => cookie === 'external_session=valid', loginUrl: '/login',
+    authenticateOwner: async cookie => cookie === 'external_session=valid', localAuth: true, loginUrl: '/login',
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -54,6 +54,27 @@ test('external auth offers relative same-origin sign-in only when reachable Plex
     assert.equal((await fetch(`${base}/api/auth/login`)).status, 404);
     assert.equal((await fetch(`${base}/api/auth/complete`, { method: 'POST' })).status, 404);
   } finally { await close(); }
+});
+
+test('local auth defaults off and hiding its link preserves external host checks', async t => {
+  for (const options of [{}, { localAuth: false }]) await t.test('localAuth' in options ? 'disabled' : 'default', async () => {
+    const { server, close } = createApp({
+      plex: { canAccess: async () => true, streams: new Map(), stop: async () => {} },
+      authenticateOwner: async cookie => cookie === 'external_session=valid', loginUrl: '/login', ...options,
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    try {
+      const session = await (await fetch(`${base}/api/session`)).json();
+      assert.equal('loginUrl' in session, false, 'A configured provider URL alone cannot enable the link.');
+      assert.equal(session.canHost, false);
+      const rejected = await fetch(`${base}/api/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Host', host: true }) });
+      assert.equal(rejected.status, 403, 'Hiding sign-in does not remove authentication.');
+      const authenticated = await (await fetch(`${base}/api/session`, { headers: { Cookie: 'external_session=valid' } })).json();
+      assert.equal(authenticated.canHost, true, 'Existing authenticated sessions can still host.');
+      assert.equal('loginUrl' in authenticated, false);
+    } finally { await close(); }
+  });
 });
 
 test('public network mode needs neither a sign-in link nor authentication routes', async () => {
@@ -95,6 +116,7 @@ test('setup writes matching private call credentials and preserves existing conf
     const secret = env.match(/LIVEKIT_API_SECRET="([a-f0-9]+)"/)[1];
     assert.equal(secret.length, 64);
     assert.match(env, /AUTH_MODE="network"/);
+    assert.match(env, /LOCAL_AUTH="false"/);
     assert.equal(env.includes('PLEX_OWNER_EMAIL'), false);
     assert.match(env, /LIVEKIT_MANAGED="true"/);
     assert.ok(fs.readFileSync(path.join(directory, 'data/livekit.yaml'), 'utf8').includes(secret));

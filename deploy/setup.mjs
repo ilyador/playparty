@@ -20,7 +20,7 @@ export function writeConfiguration(directory, { publicUrl, plexUrl, token, prefe
   const port = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ? url.port || '5175' : '5175';
   const config = { PUBLIC_URL: publicUrl, BIND_ADDRESS: '127.0.0.1', PORT: port, PLEX_URL: plexUrl,
     ...(preferences ? { PLEX_PREFERENCES: preferences } : token ? { PLEX_TOKEN: token } : {}),
-    AUTH_MODE: 'network', LIVEKIT_MANAGED: 'true', LIVEKIT_API_KEY: 'playparty', LIVEKIT_API_SECRET: secret,
+    AUTH_MODE: 'network', LOCAL_AUTH: 'false', LIVEKIT_MANAGED: 'true', LIVEKIT_API_KEY: 'playparty', LIVEKIT_API_SECRET: secret,
     MOVIE_UPLOAD_MBPS: '70' };
   const yaml = `port: 7880\nbind_addresses:\n  - 127.0.0.1\nrtc:\n  tcp_port: 7881\n  udp_port: 7882\n  use_external_ip: true\nkeys:\n  playparty: ${secret}\nlogging:\n  level: warn\n`;
   fs.writeFileSync(path.join(data, 'livekit.yaml'), yaml, { mode: 0o600, flag: 'wx' });

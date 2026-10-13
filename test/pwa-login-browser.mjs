@@ -90,7 +90,7 @@ try {
   application = createApp({
     plex: new Plex({ url: `http://127.0.0.1:${pmsPort}` }),
     authenticateOwner: ownerAuthenticator(`http://127.0.0.1:${providerPort}/api/session`, [cookieName]),
-    loginUrl: '/login', origin, recordProgress: false,
+    localAuth: true, loginUrl: '/login', origin, recordProgress: false,
     assetsRoot: path.resolve(process.env.TEST_BUILD_DIR || 'dist'),
   });
   const appPort = await listen(application.server);
