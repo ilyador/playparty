@@ -163,8 +163,16 @@ try {
     assert.ok(retryBox, 'The mobile Retry button must be visible.');
     const stopBox = await page.getByRole('button', { name: 'Stop movie', exact: true }).boundingBox();
     assert.ok(stopBox, 'Stop must remain visible during a movie error.');
+    await page.waitForFunction(() => {
+      const stop = document.querySelector('[aria-label="Stop movie"]');
+      if (!stop) return false;
+      const box = stop.getBoundingClientRect();
+      return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest('button') === stop;
+    }, undefined, { timeout: 3000 });
     const stopHit = await page.evaluate(({ x, y, width, height }) => document.elementFromPoint(x + width / 2, y + height / 2)?.closest('button')?.getAttribute('aria-label'), stopBox);
-    assert.equal(stopHit, 'Stop movie', 'The error overlay must preserve access to Stop.');
+    const errorControls = await page.locator('.movie-controls').evaluate(controls => ({ pointerEvents: getComputedStyle(controls).pointerEvents,
+      opacity: getComputedStyle(controls).opacity, paused: document.querySelector('.movie-video')?.paused }));
+    assert.equal(stopHit, 'Stop movie', `The error overlay must preserve access to Stop: ${JSON.stringify({ hit: stopHit || null, ...errorControls })}`);
     const retryHit = await page.evaluate(({ x, y, width, height }) => document.elementFromPoint(x + width / 2, y + height / 2)?.closest('button')?.textContent?.trim(), retryBox);
     assert.equal(retryHit, 'Retry movie', 'The actual mobile Retry button must receive the pointer above the movie controls.');
     await page.getByRole('button', { name: 'Retry movie', exact: true }).click();
@@ -175,7 +183,14 @@ try {
     phase = 'refresh'; await page.reload(); await join(); await assertStable('Refresh and rejoin mid-play');
     await page.getByLabel('Subtitles', { exact: true }).selectOption(subtitle); await assertCaptions('Captions after refresh');
     phase = 'leave/rejoin'; await page.getByRole('button', { name: 'Leave the call', exact: true }).click(); await page.locator('#name').waitFor();
-    await delay(2500); await join(); await assertStable('Explicit leave and rejoin');
+    assert.equal(party.members.size, 0, 'The last explicit departure must retire the empty party.');
+    assert.equal(party.movie, null, 'An empty party must not retain its old selected movie.');
+    assert.equal(party.ready.size, 0);
+    assert.equal(party.wantsPlay, false);
+    assert.equal(plex.streams.size, 0, 'The last departure must reclaim its actual Plex transcode.');
+    await delay(2500); await join();
+    assert.equal(await page.locator('.movie-video').count(), 0, 'A fresh host must enter selection instead of resuming an abandoned party.');
+    await post('select', { id: movie.id }); await assertStable('New movie after last-person departure and rejoin');
   }
   phase = 'paused return'; await post('control', { action: 'pause' });
   await page.waitForFunction(() => document.querySelector('.movie-video')?.paused);

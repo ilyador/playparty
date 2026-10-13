@@ -24,6 +24,8 @@ Setup asks for your Playparty address, Plex server address, and a [Plex token](h
 
 For a local trial, accept `http://localhost:5175` and open it in your browser. When Playparty can reach the configured Plex server from its machine, **I am the host** appears: turn it on and join. The switch stays hidden when Plex is unavailable. No Plex sign-in or email check is needed; friends enter only their name.
 
+An active hosted party disables the host switch for other visitors. Empty parties clear automatically when everyone leaves; brief disconnects keep a 45-second window to reconnect.
+
 Keep `npm start` running while watching. Ctrl+C stops the app and call server. Setup preserves existing configuration; edit `.env` to change it.
 
 ## Share with friends

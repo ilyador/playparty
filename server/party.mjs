@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
+export function participantName(name) {
+  name = String(name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 40);
+  if (!name) throw Object.assign(new Error('Enter your name to join.'), { status: 400 });
+  return name;
+}
+
 export class Party {
   constructor({ clock = Date.now } = {}) {
     this.clock = clock;
@@ -15,8 +21,7 @@ export class Party {
   }
 
   join(name, owner, id = randomUUID()) {
-    name = String(name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 40);
-    if (!name) throw Object.assign(new Error('Enter your name to join.'), { status: 400 });
+    name = participantName(name);
     const identity = owner ? 'owner' : id;
     const existing = this.members.get(identity);
     const member = { id: identity, name, owner: Boolean(owner), lastSeen: this.clock(), connected: false, ...existing };

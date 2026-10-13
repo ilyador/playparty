@@ -13,6 +13,7 @@ export default function App() {
   const [name, setName] = useState(() => localStorage.getItem('playparty-name') || '');
   const [host, setHost] = useState(false);
   const [canHost, setCanHost] = useState(false);
+  const [hostBusy, setHostBusy] = useState(false);
   const [loginUrl, setLoginUrl] = useState('');
   const [joined, setJoined] = useState<Joined | null>(null);
   const [state, setState] = useState<PartyState | null>(null);
@@ -47,15 +48,16 @@ export default function App() {
       const request = new AbortController();
       pending = request;
       const deadline = setTimeout(() => request.abort(), 8000);
-      return api<{ state: PartyState; canHost: boolean; loginUrl?: string }>('session', { signal: request.signal }).then(data => {
+      return api<{ state: PartyState; canHost: boolean; hostBusy?: boolean; loginUrl?: string }>('session', { signal: request.signal }).then(data => {
         if (disposed || request.signal.aborted) return;
         setState(data.state); setCanHost(data.canHost === true);
+        setHostBusy(data.hostBusy === true);
         setLoginUrl(data.canHost ? '' : data.loginUrl || '');
         setError(message => message === 'Playparty is unavailable. Try again in a moment.' ? '' : message);
         if (!data.canHost) setHost(false);
       }).catch(() => {
         if (!disposed) {
-          setCanHost(false); setHost(false); setLoginUrl('');
+          setCanHost(false); setHostBusy(false); setHost(false); setLoginUrl('');
           setError('Playparty is unavailable. Try again in a moment.');
         }
       }).finally(() => {
@@ -323,7 +325,8 @@ export default function App() {
           <h1>Join the party.</h1>
           <label className="name-label" htmlFor="name">Your name</label>
           <input id="name" className="name-input" autoComplete="given-name" autoFocus placeholder="What should we call you?" maxLength={40} value={name} onChange={event => setName(event.target.value)} required />
-          {canHost && <label className="host-choice" htmlFor="host"><span>I am the host</span><span className="host-switch"><input id="host" type="checkbox" role="switch" checked={host} disabled={joining} onChange={event => { setHost(event.target.checked); setError(''); }} /><span className="host-switch-track" aria-hidden="true" /></span></label>}
+          {(canHost || hostBusy) && <label className={`host-choice${hostBusy ? ' is-unavailable' : ''}`} htmlFor="host"><span>I am the host</span><span className="host-switch"><input id="host" type="checkbox" role="switch" checked={host} disabled={joining || hostBusy} aria-describedby={hostBusy ? 'host-busy' : undefined} onChange={event => { setHost(event.target.checked); setError(''); }} /><span className="host-switch-track" aria-hidden="true" /></span></label>}
+          {hostBusy && <p id="host-busy" className="host-busy" role="status">There is already an active session.</p>}
           <button className="join-button" disabled={joining || !name.trim()}>{joining ? <><SpinnerGap className="spinner" size={20} />Joining…</> : <>Join<ArrowRight size={21} /></>}</button>
           {loginUrl && <a className="host-login-link" href={loginUrl} onClick={() => localStorage.setItem('playparty-name', name.trim())}>Sign in to host</a>}
           {error && <p className="inline-error" role="alert">{error}</p>}

@@ -135,6 +135,7 @@ function app(plans, timers = { setInterval, clearInterval }, initialState, sessi
     rooms, sockets, render, movie, requests, joins, audioOutputs,
     hostChoice: () => find(node => node.type === 'input' && node.props.id === 'host', tree)?.props,
     hostLogin: () => find(node => node.type === 'a' && node.props.className === 'host-login-link', tree)?.props,
+    hostBusy: () => find(node => node.props?.id === 'host-busy', tree)?.props,
     visibility(value) { document.visibilityState = value; events.dispatchEvent(new Event('visibilitychange')); render(); },
     player: () => find(node => node.type === 'player', tree)?.props,
     button: label => find(node => node.type === 'button' && node.props['aria-label'] === label, tree).props,
@@ -196,6 +197,29 @@ test('host choice stays hidden during discovery and clears when Plex access is l
   assert.equal(view.hostChoice().checked, false, 'Recovered access must not restore a stale host selection.');
   await view.join();
   assert.equal(view.joins[0].host, false);
+});
+
+test('an active party disables host choice and retirement restores an unchecked switch', async t => {
+  const timer = clock();
+  let session = { canHost: true, hostBusy: false };
+  const view = app([{ capture: async () => tracks() }], timer, undefined, async () => session);
+  t.after(() => view.dispose());
+  await flush(); view.render();
+  view.hostChoice().onChange({ target: { checked: true } }); view.render();
+  session = { canHost: false, hostBusy: true };
+  timer.advance(5000); await flush(); view.render();
+  assert.equal(view.hostChoice().disabled, true);
+  assert.equal(view.hostChoice().checked, false);
+  assert.equal(view.hostChoice()['aria-describedby'], 'host-busy');
+  assert.equal(view.hostBusy().children, 'There is already an active session.');
+  assert.equal(view.hostLogin(), undefined, 'A busy party does not request another sign-in.');
+  session = { canHost: true, hostBusy: false };
+  timer.advance(5000); await flush(); view.render();
+  assert.equal(view.hostChoice().disabled, false);
+  assert.equal(view.hostChoice().checked, false);
+  assert.equal(view.hostBusy(), undefined);
+  await view.join();
+  assert.equal(view.joins[0].host, false, 'Retirement never restores a stale host request.');
 });
 
 test('external login stays in the app and disappears after its own session is authenticated', async t => {

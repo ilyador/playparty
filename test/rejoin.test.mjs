@@ -7,13 +7,14 @@ import { createApp } from '../server/index.mjs';
 
 test('expired memberships release cached readiness and stop their streams', async () => {
   const stopped = [];
-  const plex = { canAccess: async () => true, streams: new Map(), stop: async id => stopped.push(id) };
-  const { server, party, sessions, close } = createApp({ plex, authenticateOwner: async () => false, recordProgress: false });
+  const plex = { canAccess: async () => true, streams: new Map(), stop: async id => { stopped.push(id); plex.streams.delete(id); } };
+  const { server, party, sessions, close } = createApp({ plex, recordProgress: false, livekitKey: 'fixture-key', livekitSecret: 'test-only'.repeat(4) });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
     const member = party.join('Expired viewer', false);
     sessions.set('expired-fixture', member);
     party.select({ id: 'fixture', duration: 120 });
+    plex.streams.set(member.id, { id: 'expired-stream' });
     party.markReady(member.id, party.mediaVersion);
     member.lastSeen = Date.now() - 46000;
     await delay(2200);
@@ -21,6 +22,13 @@ test('expired memberships release cached readiness and stop their streams', asyn
     assert.equal(sessions.has('expired-fixture'), false);
     assert.equal(party.ready.has(member.id), false, 'Expiry must remove cached readiness as well as membership.');
     assert.deepEqual(stopped, [member.id]);
+    assert.equal(party.movie, null);
+    assert.equal(party.position, 0);
+    assert.equal(party.wantsPlay, false);
+    assert.equal(plex.streams.size, 0);
+    const joined = await fetch(`http://127.0.0.1:${server.address().port}/api/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New host', host: true }) });
+    assert.equal(joined.status, 200);
+    assert.equal((await joined.json()).state.movie, null, 'A fresh host starts without expired playback.');
   } finally { await close(); }
 });
 

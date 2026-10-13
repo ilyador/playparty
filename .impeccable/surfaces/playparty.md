@@ -39,6 +39,7 @@ FINISH: Fresh finish review on 2026-10-13 accepted all five contract sections; d
 - Inline movie and call video suppress native controls and picture-in-picture where supported. Physical Safari playback, native captions, and microphone permission persistence remain unverified.
 - The name-only guest path is retained. The host switch starts off and appears only after the machine running Playparty verifies access to its configured Plex library; it stays hidden when unavailable. Public guest identities are distinct from private session cookies. Standalone hosting requires no browser Plex sign-in or email match; an optional external provider additionally requires an authenticated session. A configured “Sign in to host” link opens that existing login in the same window, preserving the name and the Home Screen app's cookie store through a same-origin return. No deployment-specific account data belongs in the surface brief.
 - Home Screen and browser identity use the shipped opaque graphite companion/play icon, with chalk and muted sage forms. HTML links the Apple touch icon, favicon, and manifest. The manifest launches in standalone display with root start URL and scope; no service worker is added.
+- An active hosted party disables the host switch for other visitors with “There is already an active session.” as its accessible explanation. Empty-party retirement restores the unchecked switch; guests can still join an active party.
 
 ## Finish evidence
 

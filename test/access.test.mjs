@@ -20,12 +20,18 @@ async function hostApp(plex, options = {}) {
   }) };
 }
 
+async function connectParty(server, cookie) {
+  const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/events`, { headers: { Cookie: cookie } });
+  await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+  return socket;
+}
+
 test('configured Plex access enables hosting without identity checks, but only an explicit host choice grants controls', async () => {
   const { request, close } = await hostApp(hostFixture());
   try {
     const session = await (await request('session')).json();
     assert.equal(session.canHost, true);
-    assert.deepEqual(Object.keys(session).sort(), ['canHost', 'state']);
+    assert.deepEqual(Object.keys(session).sort(), ['canHost', 'hostBusy', 'state']);
     for (const body of [{ name: 'Guest' }, { name: 'Guest', owner: true }, { name: 'Guest', host: false }]) {
       const joined = await request('join', body);
       assert.equal(joined.status, 200);
@@ -181,7 +187,7 @@ test('a retired host cannot apply a movie selection whose Plex metadata arrives 
         assert.equal(retired.status, 200);
         finish({ id: 'late', type: 'movie', duration: 120 });
         assert.equal((await selected).status, 401);
-        assert.equal(party.movie.id, 'original', 'Late metadata cannot change playback after its host loses the session.');
+        assert.equal(party.movie, null, 'Late metadata cannot resurrect playback after the empty party is cleared.');
       } finally { finish?.({ id: 'late', type: 'movie', duration: 120 }); await close(); }
     });
   }
@@ -299,46 +305,166 @@ test('public guest identities cannot be used as participant session cookies', as
   } finally { socket?.terminate(); await close(); }
 });
 
-test('an owner switching browsers retires the old participant session', async () => {
-  const plex = { canAccess: async () => true, streams: new Map(), stop: async () => {}, library: async () => [] };
-  const { server, sessions, party, close } = createApp({ plex, authenticateOwner: cookie => cookie?.includes('owner=test'),
-    livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', recordProgress: false });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const base = `http://127.0.0.1:${server.address().port}`;
+test('an active host rejects another browser while the current browser can refresh without losing playback', async () => {
+  const { request, server, sessions, party, close } = await hostApp(hostFixture());
   const sockets = [];
-  async function join() {
-    const response = await fetch(`${base}/api/join`, { method: 'POST', headers: { Cookie: 'owner=test', 'Content-Type': 'application/json' }, body: '{"name":"Host","host":true}' });
-    assert.equal(response.status, 200);
-    return response.headers.get('set-cookie').split(';')[0] + '; owner=test';
-  }
   async function connect(cookie) {
-    const socket = new WebSocket(base.replace(/^http/, 'ws') + '/events', { headers: { Cookie: cookie } });
+    const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/events`, { headers: { Cookie: cookie } });
     sockets.push(socket);
     await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
     return socket;
   }
   try {
-    const firstCookie = await join();
-    await connect(firstCookie);
-    const oldMember = [...sessions.values()][0];
-    const secondCookie = await join();
-    let current = await connect(secondCookie);
-    const currentClosed = new Promise(resolve => current.once('close', resolve));
-    party.ready.add('owner');
-    const repeatedJoin = await fetch(`${base}/api/join`, { method: 'POST', headers: { Cookie: secondCookie, 'Content-Type': 'application/json' }, body: '{"name":"Host","host":true}' });
-    assert.equal(repeatedJoin.status, 200);
-    assert.equal(party.members.get('owner').connected, false);
-    assert.equal(party.ready.has('owner'), false);
-    await currentClosed;
-    current = await connect(secondCookie);
-    oldMember.lastSeen = Date.now() - 91000;
+    const joined = await request('join', { name: 'Host', host: true });
+    const cookie = joined.headers.get('set-cookie').split(';')[0];
+    const original = await connect(cookie);
+    const oldMember = party.members.get('owner');
+    party.select({ id: 'original', duration: 120, resumePosition: 23 });
+    party.control('pause');
+    const version = party.mediaVersion;
+    const blocked = await request('join', { name: 'Other host', host: true });
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json()).error, 'There is already an active session.');
+    assert.equal(party.members.get('owner'), oldMember);
+    assert.equal(original.readyState, WebSocket.OPEN);
+    const outsider = await (await request('session')).json();
+    assert.equal(outsider.canHost, false);
+    assert.equal(outsider.hostBusy, true);
+    const self = await (await request('session', undefined, cookie)).json();
+    assert.equal(self.canHost, true);
+    assert.equal(self.hostBusy, false);
+    const originalClosed = new Promise(resolve => original.once('close', resolve));
+    const repeated = await request('join', { name: 'Host', host: true }, cookie);
+    assert.equal(repeated.status, 200);
+    await originalClosed;
+    const current = await connect(cookie);
+    assert.equal(party.movie.id, 'original');
+    assert.equal(party.position, 23);
+    assert.equal(party.mediaVersion, version);
     assert.equal(sessions.size, 1);
-    assert.equal((await fetch(`${base}/api/library`, { headers: { Cookie: firstCookie } })).status, 401);
+    assert.equal(party.ready.has('owner'), false);
+    oldMember.lastSeen = Date.now() - 91000;
     await new Promise(resolve => setTimeout(resolve, 2100));
     assert.ok(party.members.get('owner')?.connected);
     assert.equal(current.readyState, WebSocket.OPEN);
-    assert.equal((await fetch(`${base}/api/library`, { headers: { Cookie: secondCookie } })).status, 200);
+    assert.equal((await request('library', undefined, cookie)).status, 200);
   } finally { for (const socket of sockets) socket.terminate(); await close(); }
+});
+
+test('connected guests protect a disconnected host during reconnect grace and guests can still join', async () => {
+  const { request, server, party, close } = await hostApp(hostFixture());
+  const sockets = [];
+  async function join(name, host = false) {
+    const response = await request('join', { name, host });
+    assert.equal(response.status, 200);
+    return response.headers.get('set-cookie').split(';')[0];
+  }
+  try {
+    const host = await join('Host', true);
+    const guest = await join('Guest');
+    const hostSocket = await connectParty(server, host); sockets.push(hostSocket);
+    const guestSocket = await connectParty(server, guest); sockets.push(guestSocket);
+    party.select({ id: 'original', duration: 120, resumePosition: 21 });
+    party.control('pause');
+    assert.equal((await request('join', { name: 'Other host', host: true })).status, 409);
+    const disconnected = new Promise(resolve => hostSocket.once('close', resolve));
+    hostSocket.close(); await disconnected;
+    assert.equal(party.members.get('owner').connected, false);
+    const session = await (await request('session')).json();
+    assert.equal(session.canHost, false); assert.equal(session.hostBusy, true);
+    assert.equal((await request('join', { name: 'Other host', host: true })).status, 409);
+    const additional = await request('join', { name: 'Another guest' });
+    assert.equal(additional.status, 200); assert.equal((await additional.json()).owner, false);
+    assert.equal((await request('join', { name: 'Host again', host: true }, host)).status, 200);
+    assert.equal(party.movie.id, 'original'); assert.equal(party.position, 21);
+    assert.equal(guestSocket.readyState, WebSocket.OPEN);
+  } finally { for (const socket of sockets) socket.terminate(); await close(); }
+});
+
+test('joining a populated unhosted party preserves guests and playback, including pre-WebSocket guests', async t => {
+  for (const connected of [false, true]) await t.test(connected ? 'connected' : 'pending', async () => {
+    const { request, server, party, close } = await hostApp(hostFixture());
+    const sockets = [];
+    try {
+      const guest = await request('join', { name: 'Waiting guest' });
+      const cookie = guest.headers.get('set-cookie').split(';')[0];
+      const identity = (await guest.json()).identity;
+      if (connected) sockets.push(await connectParty(server, cookie));
+      const member = party.members.get(identity);
+      party.select({ id: 'retained', duration: 120, resumePosition: 44 });
+      party.control('pause');
+      const version = party.mediaVersion;
+      const session = await (await request('session')).json();
+      assert.equal(session.canHost, true); assert.equal(session.hostBusy, false);
+      assert.equal((await request('join', { name: 'Host', host: true })).status, 200);
+      assert.equal(party.members.get(identity), member);
+      assert.equal(party.movie.id, 'retained'); assert.equal(party.position, 44);
+      assert.equal(party.mediaVersion, version);
+      assert.equal(party.members.size, 2);
+    } finally { for (const socket of sockets) socket.terminate(); await close(); }
+  });
+});
+
+test('a host claim rechecks activity after its asynchronous Plex validation', async () => {
+  let validate = () => true;
+  let began;
+  let finish;
+  const { request, server, party, close } = await hostApp(hostFixture({ canAccess: async () => validate() }));
+  let socket;
+  try {
+    const first = await request('join', { name: 'First host', host: true });
+    const cookie = first.headers.get('set-cookie').split(';')[0];
+    const member = party.members.get('owner');
+    party.select({ id: 'original', duration: 120 });
+    const pending = new Promise(resolve => { began = resolve; });
+    validate = () => { began(); return new Promise(resolve => { finish = resolve; }); };
+    const other = request('join', { name: 'Other host', host: true });
+    await pending;
+    socket = await connectParty(server, cookie);
+    finish(true);
+    assert.equal((await other).status, 409);
+    assert.equal(party.members.get('owner'), member);
+    assert.equal(party.movie.id, 'original');
+    assert.equal(socket.readyState, WebSocket.OPEN);
+  } finally { finish?.(false); socket?.terminate(); await close(); }
+});
+
+test('invalid host names cannot destructively clear an empty stale party', async () => {
+  const { request, party, sessions, close } = await hostApp(hostFixture());
+  try {
+    assert.equal((await request('join', { name: 'Old host', host: true })).status, 200);
+    const member = party.members.get('owner');
+    party.select({ id: 'retained', duration: 120 });
+    assert.equal((await request('join', { name: '\u0000\t', host: true })).status, 400);
+    assert.equal(party.members.get('owner'), member);
+    assert.equal(party.movie.id, 'retained');
+    assert.equal(sessions.size, 1);
+  } finally { await close(); }
+});
+
+test('the final explicit leave clears playback and streams, saves progress, and permits a fresh host', async () => {
+  const progress = [];
+  const plex = hostFixture({ stop: async id => { plex.streams.delete(id); },
+    timeline: async (movie, position, state) => { progress.push({ id: movie.id, position, state }); },
+  });
+  const { request, party, sessions, close } = await hostApp(plex, { recordProgress: true });
+  try {
+    const joined = await request('join', { name: 'Host', host: true });
+    const cookie = joined.headers.get('set-cookie').split(';')[0];
+    party.select({ id: 'old', duration: 120, resumePosition: 31 });
+    party.control('pause');
+    party.ready.add('owner');
+    plex.streams.set('owner', { id: 'old-stream' });
+    assert.equal((await request('leave', {}, cookie)).status, 200);
+    assert.equal(party.movie, null); assert.equal(party.position, 0); assert.equal(party.wantsPlay, false);
+    assert.equal(party.members.size, 0); assert.equal(party.ready.size, 0); assert.equal(sessions.size, 0);
+    assert.equal(plex.streams.size, 0);
+    assert.deepEqual(progress, [{ id: 'old', position: 31, state: 'stopped' }]);
+    const fresh = await request('join', { name: 'New host', host: true });
+    assert.equal(fresh.status, 200);
+    assert.equal((await fresh.json()).state.movie, null);
+    assert.equal((await request('library', undefined, cookie)).status, 401);
+  } finally { await close(); }
 });
 
 test('same-cookie rejoins and duplicate state sockets explicitly supersede the old tab', async () => {
@@ -447,15 +573,20 @@ test('leaving cancels waiting and in-flight streams before a returning participa
     await oldStarted;
     const queuedPlayback = request('playback');
     await queuedAccepted;
-    assert.equal((await request('leave')).status, 200);
-    assert.equal(plex.streams.size, 0);
-    const returning = await (await request('join', { name: 'Guest' })).json();
-    assert.equal(returning.identity, first.identity);
-    const newPlayback = request('playback');
+    const leaving = request('leave');
+    for (let tries = 0; party.members.size && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(party.members.size, 0);
+    assert.equal(party.movie, null, 'The last explicit departure clears playback immediately.');
+    const joiningAgain = request('join', { name: 'Guest' });
     finishOld();
+    assert.equal((await leaving).status, 200);
+    assert.equal(plex.streams.size, 0);
     assert.equal((await oldPlayback).status, 401);
     assert.equal((await queuedPlayback).status, 401);
-    assert.equal((await newPlayback).status, 200);
+    const returning = await (await joiningAgain).json();
+    assert.equal(returning.identity, first.identity);
+    party.select({ id: 'new', duration: 120 });
+    assert.equal((await request('playback')).status, 200);
     assert.equal(starts, 2);
     assert.equal(plex.streams.get(first.identity)?.id, 'stream-2');
   } finally { finishOld?.(); await close(); }

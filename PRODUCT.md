@@ -18,6 +18,8 @@ People with an accessible Plex server and their friends. Personal use, not a com
 
 Open one URL, enter a name, and join the current call and movie. Choose to host when the machine running Playparty can access its configured Plex server; otherwise the host option is hidden. Guests are never automatically promoted to host.
 
+An active hosted party prevents another visitor from taking over. Empty parties clear automatically when the last member leaves or expires; a brief network disconnect preserves the existing reconnect window.
+
 ## Operating Context
 
 Self-hosted at a configured HTTPS address. Plex is a backend, not the client. Existing Plex metadata supplies a simplified content picker. Standalone installs check configured Plex library access automatically, with no browser Plex sign-in or email matching. An optional external session provider restricts host and library access to authenticated sessions. Guests enter only their name.

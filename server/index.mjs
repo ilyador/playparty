@@ -11,7 +11,7 @@ import express from 'express';
 import httpProxy from 'http-proxy';
 import { WebSocketServer } from 'ws';
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
-import { Party } from './party.mjs';
+import { Party, participantName } from './party.mjs';
 import { Plex } from './plex.mjs';
 import { MovieBudget } from './bandwidth.mjs';
 import { cookies, ownerAuthenticator, sessionId } from './auth.mjs';
@@ -59,6 +59,7 @@ export function createApp({ plex, authenticateOwner = async () => true, loginUrl
   let plexProbe;
   let plexAvailable = false;
   let plexCheckedAt = 0;
+  let retirement;
 
   function plexAccess(fresh = false) {
     if (plexProbe) return plexProbe;
@@ -108,6 +109,46 @@ export function createApp({ plex, authenticateOwner = async () => true, loginUrl
 
   function participant(req) { return sessions.get(cookies(req.headers.cookie).playparty_session); }
   function currentMember(member) { return !closing && member && party.members.get(member.id) === member; }
+  function connectedMembers() { return [...party.members.values()].some(member => member.connected); }
+  function hostBusy(req) {
+    const owner = party.members.get('owner');
+    return Boolean(owner && participant(req) !== owner && connectedMembers());
+  }
+  async function finishRetirement() { while (retirement) await retirement; }
+  function retireMembers(members, reset = false) {
+    const retired = [...new Set(members)].filter(member => party.members.get(member.id) === member);
+    if (!retired.length && !reset) return retirement || Promise.resolve();
+    const progress = reset || retired.some(member => member.owner) ? saveProgress('stopped') : Promise.resolve();
+    const locks = reset ? [...playbackLocks.values()] : retired.map(member => playbackLocks.get(member.id)).filter(Boolean);
+    if (reset) {
+      selectionRevision += 1;
+      clearTimeout(waitTimer);
+      party.stop();
+      progressSession = randomUUID();
+    }
+    for (const member of retired) {
+      party.members.delete(member.id);
+      party.ready.delete(member.id);
+      const socket = sockets.get(member.id);
+      sockets.delete(member.id);
+      socket?.close(4002, 'Session expired');
+      for (const [sid, session] of sessions) if (session === member) sessions.delete(sid);
+    }
+    party.startIfReady();
+    broadcast();
+    const previous = retirement;
+    const work = (async () => {
+      await previous;
+      await Promise.allSettled(locks);
+      const identities = new Set([...retired.map(member => member.id), ...(reset ? [...plex.streams.keys()] : [])]);
+      await Promise.allSettled([progress, ...[...identities].map(id => plex.stop(id)),
+        ...retired.map(member => call?.removeParticipant(roomName, member.id))]);
+      if (reset && call) await call.deleteRoom(roomName).catch(() => {});
+    })();
+    const pending = work.finally(() => { if (retirement === pending) retirement = undefined; });
+    retirement = pending;
+    return pending;
+  }
   function requireMember(req, res, next) {
     const member = participant(req);
     if (!currentMember(member)) return res.status(401).json({ error: 'Enter your name to join.' });
@@ -140,7 +181,8 @@ export function createApp({ plex, authenticateOwner = async () => true, loginUrl
   app.get('/api/session', async (req, res) => {
     const plexReady = await plexAccess();
     const eligible = plexReady && Boolean(await authenticateOwner(req.headers.cookie));
-    res.json({ canHost: eligible, ...(!eligible && plexReady && loginUrl ? { loginUrl } : {}), state: party.snapshot() });
+    const busy = eligible && hostBusy(req);
+    res.json({ canHost: eligible && !busy, hostBusy: busy, ...(!eligible && plexReady && loginUrl ? { loginUrl } : {}), state: party.snapshot() });
   });
   app.use((req, res, next) => {
     if (!req.url.startsWith('/livekit/')) return next();
@@ -149,15 +191,31 @@ export function createApp({ plex, authenticateOwner = async () => true, loginUrl
     proxy.web(req, res);
   });
   app.post('/api/join', async (req, res) => {
+    const name = participantName(req.body?.name);
     const owner = req.body?.host === true && await canHost(req, true);
+    await finishRetirement();
     if (closing) return res.status(503).json({ error: 'Playparty is restarting. Try again shortly.' });
     if (req.body?.host === true && !owner) {
       return res.status(403).json({ error: 'An accessible Plex server is required to host.' });
     }
+    if (owner && hostBusy(req)) return res.status(409).json({ error: 'There is already an active session.' });
+    if (owner && !(party.members.has('owner') && participant(req) === party.members.get('owner')) && !connectedMembers() &&
+      (party.members.has('owner') || !party.members.size && (party.movie || plex.streams.size || playbackLocks.size))) {
+      await retireMembers([...party.members.values()], true);
+      await finishRetirement();
+    }
+    if (closing) return res.status(503).json({ error: 'Playparty is restarting. Try again shortly.' });
+    if (owner && hostBusy(req)) return res.status(409).json({ error: 'There is already an active session.' });
     const sid = sessionId(req, res, req.secure);
-    const previous = sessions.get(sid);
     const guestIdentity = createHmac('sha256', sessionIdentityKey).update(sid).digest('base64url');
-    const member = party.join(req.body?.name, owner, guestIdentity);
+    const previous = sessions.get(sid);
+    if (previous && previous.id !== (owner ? 'owner' : guestIdentity)) {
+      await retireMembers([previous]);
+      await finishRetirement();
+    }
+    if (closing) return res.status(503).json({ error: 'Playparty is restarting. Try again shortly.' });
+    if (owner && hostBusy(req)) return res.status(409).json({ error: 'There is already an active session.' });
+    const member = party.join(name, owner, guestIdentity);
     member.connected = false;
     party.ready.delete(member.id);
     sockets.get(member.id)?.close(4001, 'Joined in another tab');
@@ -165,33 +223,18 @@ export function createApp({ plex, authenticateOwner = async () => true, loginUrl
       if (otherSid === sid || otherMember.id !== member.id) continue;
       sessions.delete(otherSid);
     }
-    if (previous && previous.id !== member.id) {
-      sockets.get(previous.id)?.close(4001, 'Joined in another tab');
-      party.members.delete(previous.id);
-      await plex.stop(previous.id);
-      if (closing) return res.status(503).json({ error: 'Playparty is restarting. Try again shortly.' });
-      call?.removeParticipant(roomName, previous.id).catch(() => {});
-    }
     member.local = localNetwork(req.ip);
     member.device = /iphone/i.test(req.headers['user-agent'] || '') ? 'iphone' : /android/i.test(req.headers['user-agent'] || '') ? 'android' : 'desktop';
     sessions.set(sid, member);
     const token = new AccessToken(livekitKey, livekitSecret, { identity: member.id, name: member.name, ttl: '6h', metadata: JSON.stringify({ owner: member.owner }) });
     token.addGrant({ room: roomName, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: false, canPublishSources: [1, 2] });
     const callUrl = ['localhost', '127.0.0.1'].includes(req.hostname) ? `ws://${req.get('host')}/livekit` : livekitUrl;
-    res.json({ identity: member.id, name: member.name, owner: member.owner, token: await token.toJwt(), livekitUrl: callUrl, state: party.snapshot() });
+    const jwt = await token.toJwt();
+    if (!currentMember(member) || sessions.get(sid) !== member) return res.status(409).json({ error: 'Your session changed. Join again to reconnect.' });
+    res.json({ identity: member.id, name: member.name, owner: member.owner, token: jwt, livekitUrl: callUrl, state: party.snapshot() });
   });
   app.post('/api/leave', requireMember, async (req, res) => {
-    const member = req.member;
-    const progress = member.owner ? saveProgress('stopped') : Promise.resolve();
-    sockets.get(member.id)?.close();
-    party.members.delete(member.id);
-    party.ready.delete(member.id);
-    party.startIfReady();
-    sessions.delete(cookies(req.headers.cookie).playparty_session);
-    await plex.stop(member.id);
-    await progress;
-    call?.removeParticipant(roomName, member.id).catch(() => {});
-    broadcast();
+    await retireMembers([req.member], party.members.size === 1);
     res.json({ ok: true });
   });
   app.get('/api/library', requireMember, requireHost, async (req, res) => {
@@ -378,19 +421,14 @@ export function createApp({ plex, authenticateOwner = async () => true, loginUrl
   const ticker = setInterval(() => {
     const now = Date.now();
     if (party.members.get('owner')?.connected && now - lastProgressAt >= 10000) saveProgress();
+    const expired = new Set();
     for (const [sid, member] of sessions) {
       if (!currentMember(member)) { sessions.delete(sid); continue; }
       if ((!member.connected && now - member.lastSeen > 45000) || now - member.lastSeen > 90000) {
-        sockets.get(member.id)?.close(4002, 'Session expired');
-        sockets.delete(member.id);
-        party.members.delete(member.id);
-        party.ready.delete(member.id);
-        party.startIfReady();
-        sessions.delete(sid);
-        plex.stop(member.id).catch(() => {});
-        call?.removeParticipant(roomName, member.id).catch(() => {});
+        expired.add(member);
       }
     }
+    if (expired.size) retireMembers([...expired], expired.size === party.members.size).catch(() => {});
     broadcast();
   }, 2000);
   ticker.unref();
@@ -419,6 +457,7 @@ export function createApp({ plex, authenticateOwner = async () => true, loginUrl
     server.closeAllConnections();
     for (const socket of wss.clients) socket.terminate();
     proxy.close();
+    await finishRetirement();
     await Promise.allSettled([...playbackLocks.values()]);
     await Promise.all([progress, ...[...plex.streams.keys()].map(id => plex.stop(id))]);
     sessions.clear();
