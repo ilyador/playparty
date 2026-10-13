@@ -107,7 +107,7 @@ function app(plans, timers = { setInterval, clearInterval }, initialState, sessi
     './call-capture': capture, './call-audio': audio, './movie-element': { createMovieElement: () => movie },
     './types': {
       contentTitle: content => content.title,
-      api: async () => ({ state, ...await session() }),
+      api: async (_path, options) => ({ state, ...await session(options?.signal) }),
       post: async (path, body) => { requests.push(path); if (path === 'join') joins.push(body); return path === 'join' ? { identity: `person-${++identity}`, name: 'Test', owner: false, state, livekitUrl: '', token: '' } : {}; },
     },
   }, {
@@ -211,6 +211,29 @@ test('failed discovery removes host choice and overlapping refreshes cannot over
   assert.equal(view.hostChoice(), undefined);
   await view.join();
   assert.equal(view.joins[0].host, false, 'A hidden stale switch cannot submit a host request.');
+});
+
+test('a hung initial discovery times out and the next check restores the host option', async t => {
+  const timer = clock();
+  let requests = 0, cancelled = false;
+  const view = app([], timer, undefined, signal => {
+    if (++requests > 1) return Promise.resolve({ canHost: true });
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+      cancelled = true;
+      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+    }, { once: true }));
+  });
+  t.after(() => view.dispose());
+  timer.advance(5000); await flush(); view.render();
+  assert.equal(requests, 1, 'A slow request is not duplicated.');
+  assert.equal(view.hostChoice(), undefined);
+  timer.advance(3000); await flush(); view.render();
+  assert.equal(cancelled, true, 'Discovery cannot block every later check indefinitely.');
+  assert.match(view.joinError(), /unavailable/);
+  timer.advance(2000); await flush(); view.render();
+  assert.equal(requests, 2);
+  assert.equal(view.hostChoice().checked, false, 'Fresh verified access renders the host option without selecting it.');
+  assert.equal(view.joinError(), undefined, 'Successful discovery clears its earlier network warning.');
 });
 
 test('startup capture blocks a second device request, and SDK mute disables the only microphone', async t => {

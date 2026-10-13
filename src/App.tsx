@@ -39,26 +39,32 @@ export default function App() {
 
   useEffect(() => {
     if (joined) return;
-    const abort = new AbortController();
-    let refreshing = false;
+    let disposed = false;
+    let pending: AbortController | undefined;
     const refresh = () => {
-      if (refreshing) return;
-      refreshing = true;
-      return api<{ state: PartyState; canHost: boolean }>('session', { signal: abort.signal }).then(data => {
-        if (abort.signal.aborted) return;
+      if (pending) return;
+      const request = new AbortController();
+      pending = request;
+      const deadline = setTimeout(() => request.abort(), 8000);
+      return api<{ state: PartyState; canHost: boolean }>('session', { signal: request.signal }).then(data => {
+        if (disposed || request.signal.aborted) return;
         setState(data.state); setCanHost(data.canHost === true);
+        setError(message => message === 'Playparty is unavailable. Try again in a moment.' ? '' : message);
         if (!data.canHost) setHost(false);
       }).catch(() => {
-        if (!abort.signal.aborted) {
+        if (!disposed) {
           setCanHost(false); setHost(false);
           setError('Playparty is unavailable. Try again in a moment.');
         }
-      }).finally(() => { refreshing = false; });
+      }).finally(() => {
+        clearTimeout(deadline);
+        if (pending === request) pending = undefined;
+      });
     };
     refresh();
     const timer = setInterval(refresh, 5000);
     window.addEventListener('focus', refresh);
-    return () => { abort.abort(); clearInterval(timer); window.removeEventListener('focus', refresh); };
+    return () => { disposed = true; pending?.abort(); clearInterval(timer); window.removeEventListener('focus', refresh); };
   }, [Boolean(joined)]);
 
   useEffect(() => {
