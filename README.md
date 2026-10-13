@@ -1,5 +1,7 @@
 # Playparty
 
+**Playparty has no built-in authentication by design.** It is meant to be used through private URLs and/or a VPN.
+
 A movie and a video call for you and your friends. Open one URL, enter your name, and join. The host picks what plays; playback stays synchronized and everyone chooses their own subtitles.
 
 Remote streams adjust to the connection. Local playback keeps the highest compatible quality, and your other Plex apps keep their existing settings.
