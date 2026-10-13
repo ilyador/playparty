@@ -164,6 +164,50 @@ test('same-cookie rejoins and duplicate state sockets explicitly supersede the o
   } finally { for (const socket of sockets) socket.terminate(); await close(); }
 });
 
+test('expired party sockets terminate explicitly and invalid sessions receive no party data', async () => {
+  const plex = { streams: new Map(), stop: async () => {} };
+  const { server, sessions, party, close } = createApp({ plex, authenticateOwner: async () => false,
+    livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', livekitInternalUrl: 'http://127.0.0.1:1', recordProgress: false });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`, sockets = [];
+  const connect = cookie => {
+    const socket = new WebSocket(base.replace(/^http/, 'ws') + '/events', { headers: { ...(cookie ? { Cookie: cookie } : {}), Origin: 'http://localhost:5175' } });
+    sockets.push(socket);
+    const messages = [];
+    const firstState = new Promise(resolve => socket.on('message', data => { messages.push(data.toString()); resolve(); }));
+    const closed = new Promise(resolve => socket.once('close', (code, reason) => resolve({ code, reason: reason.toString() })));
+    const opened = new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+    return { socket, messages, firstState, closed, opened };
+  };
+  try {
+    const response = await fetch(`${base}/api/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"name":"Guest"}' });
+    const cookie = response.headers.get('set-cookie').split(';')[0], member = await response.json();
+    const current = connect(cookie); await current.opened; await current.firstState;
+    party.ready.add(member.identity);
+    party.members.get(member.identity).lastSeen = Date.now() - 91000;
+    assert.deepEqual(await current.closed, { code: 4002, reason: 'Session expired' });
+    assert.equal(party.members.has(member.identity), false);
+    assert.equal(party.ready.has(member.identity), false);
+    assert.equal(sessions.size, 0);
+    const continuing = await fetch(`${base}/api/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"name":"Continuing viewer"}' });
+    const validCookie = continuing.headers.get('set-cookie').split(';')[0], validMember = await continuing.json();
+    const valid = connect(validCookie); await valid.opened; await valid.firstState;
+    party.select({ id: 'private-movie', title: 'Private movie', duration: 120 });
+    for (const invalid of [cookie, `playparty_session=${member.identity}`, 'playparty_session=unknown', undefined]) {
+      const waking = connect(invalid); await waking.opened;
+      assert.deepEqual(await waking.closed, { code: 4002, reason: 'Session expired' });
+      assert.deepEqual(waking.messages, [], 'The terminal handshake must not reveal movie, playback, participant, or authentication data.');
+      assert.equal(party.members.size, 1, 'An invalid WebSocket cannot recreate an expired member.');
+      assert.ok(party.members.get(validMember.identity)?.connected, 'Rejected sessions cannot evict an active viewer.');
+    }
+    const crossOrigin = new WebSocket(base.replace(/^http/, 'ws') + '/events', { headers: { Cookie: validCookie, Origin: 'https://unrelated.example' } });
+    sockets.push(crossOrigin);
+    const leaked = []; crossOrigin.on('message', data => leaked.push(data.toString()));
+    await assert.rejects(new Promise((resolve, reject) => { crossOrigin.once('open', resolve); crossOrigin.once('error', reject); }));
+    assert.deepEqual(leaked, [], 'An unrelated origin must still be rejected before the WebSocket handshake.');
+  } finally { for (const socket of sockets) socket.terminate(); await close(); }
+});
+
 test('leaving cancels waiting and in-flight streams before a returning participant starts another', async () => {
   let finishOld;
   let announceStart;

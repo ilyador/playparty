@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { Party } from '../server/party.mjs';
 import { syncWatchdog } from '../src/sync-watchdog.ts';
+import { seekWatchdog } from '../src/seek-watchdog.ts';
 
 const playerCode = ts.transpileModule(fs.readFileSync(new URL('../src/Player.tsx', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
@@ -12,7 +13,7 @@ const playerCode = ts.transpileModule(fs.readFileSync(new URL('../src/Player.tsx
 
 // Run the real Player effects against a deterministic native media fixture.
 // These tests cover readiness bookkeeping, not Safari's decoder or autoplay.
-function mountPlayer(party, member, { currentTime = party.position, bufferedEnd = 16, engine = 'native' } = {}) {
+function mountPlayer(party, member, { currentTime = party.position, bufferedEnd = 16, bufferedRanges = [[0, bufferedEnd]], engine = 'native' } = {}) {
   const slots = [], pendingEffects = [], intervals = new Set(), requests = [], ready = [], buffering = [], posts = [];
   const listeners = new Map();
   const samples = [], hlsInstances = [];
@@ -23,7 +24,7 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
   const video = {
     paused: true, readyState: 4, currentTime, seeking: false, playbackRate: 1, ended: false, playCalls: 0,
     volume: 1, muted: false, error: null,
-    buffered: { length: 1, start: () => 0, end: () => bufferedEnd },
+    buffered: { length: bufferedRanges.length, start: index => bufferedRanges[index][0], end: index => bufferedRanges[index][1] },
     textTracks: Object.assign([], { addEventListener() {}, removeEventListener() {} }),
     addEventListener(event, callback) {
       if (!listeners.has(event)) listeners.set(event, new Set());
@@ -84,7 +85,7 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
     './movie-audio': { movieAudio: () => ({ dispose() {}, setMuted() {}, setSpeech() {} }) },
     './movie-element': { createMovieElement: element => element },
     './sync-rate': { syncRate: () => 1 },
-    './seek-watchdog': { seekWatchdog: () => ({ reset() {}, sample: () => ({ stalled: false, reload: false }) }) },
+    './seek-watchdog': { seekWatchdog },
     './sync-watchdog': { syncWatchdog },
     './adaptive-quality': { createAdaptiveQuality: () => ({ configure() {}, sample() {} }) },
     'hls.js': { default: Hls },
@@ -150,6 +151,36 @@ function setup(clock = () => 1000) {
   party.select({ id: '1', title: 'Fixture', duration: 120, subtitles: [{ id: '9', label: 'English' }] });
   return { party, host, guest };
 }
+
+for (const gap of [0.103333, 1.103333]) test(`readiness treats a ${gap.toFixed(3)}-second mux gap according to playable buffer`, async () => {
+  const { party, host, guest } = setup();
+  party.select({ id: 'fixture', duration: 1200 }); party.control('seek', 630);
+  party.markReady(guest.id, party.mediaVersion);
+  const shift = gap - 0.103333;
+  const player = mountPlayer(party, host, { engine: 'hls', bufferedRanges: [[629.019, 633.923833], [634.027166 + shift, 634.086 + shift], [634.17 + shift, 636.160166 + shift]] });
+  try {
+    await player.loadSource(); player.tick();
+    assert.equal(party.paused, gap > 0.2, 'Small A/V mux gaps must not trap a decoded stream below the four-second readiness boundary; real missing media must still wait.');
+    assert.equal(party.ready.has(host.id), gap <= 0.2);
+    assert.equal(player.pendingSources(), 0, 'Readiness needs no additional reload loop.');
+  } finally { player.dispose(); }
+});
+
+for (const futureData of [true, false]) test(`a seek inside a real media gap ${futureData ? 'recovers with future data' : 'waits when no future data exists'}`, async () => {
+  let now = 1000;
+  const { party, host } = setup(() => now);
+  party.select({ id: 'fixture', duration: 1200 }); party.control('seek', 666.813);
+  const bufferedRanges = [[658.582, 666.629166], ...(futureData ? [[668.8, 700.804166]] : [])];
+  const player = mountPlayer(party, host, { engine: 'hls', bufferedRanges });
+  try {
+    await player.loadSource(); player.video.readyState = 1; player.video.seeking = true;
+    player.tick(); now += 8100; player.tick(); player.render();
+    assert.equal(player.pendingSources(), futureData ? 1 : 0, 'An unfinished seek can recover when later segments exist; an empty network buffer must keep waiting.');
+    assert.equal(party.position, 666.813, 'Recovery cannot jump the shared clock over missing media.');
+    assert.ok(party.paused && party.wantsPlay);
+    assert.equal(player.samples.filter(sample => sample.event === 'seek-recovery').length, futureData ? 1 : 0);
+  } finally { player.dispose(); }
+});
 
 for (const status of [503, 200]) test(`temporary playback API ${status} failures retry at most once per thirty seconds and resume readiness`, async () => {
   let now = 1000;

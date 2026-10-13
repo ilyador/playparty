@@ -295,7 +295,12 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
       delete req.headers.cookie;
       return proxy.ws(req, socket, head);
     }
-    if (req.url !== '/events' || !currentMember(session) || !allowedOrigin) return socket.destroy();
+    if (req.url !== '/events' || !allowedOrigin) return socket.destroy();
+    if (!currentMember(session)) {
+      // A WebSocket cannot read an HTTP rejection status. Send only a terminal
+      // close so a waking client can release its stale call and rejoin.
+      return wss.handleUpgrade(req, socket, head, ws => ws.close(4002, 'Session expired'));
+    }
     wss.handleUpgrade(req, socket, head, ws => {
       sockets.get(session.id)?.close(4001, 'Joined in another tab');
       sockets.set(session.id, ws);
@@ -358,7 +363,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     for (const [sid, member] of sessions) {
       if (!currentMember(member)) { sessions.delete(sid); continue; }
       if ((!member.connected && now - member.lastSeen > 45000) || now - member.lastSeen > 90000) {
-        sockets.get(member.id)?.close();
+        sockets.get(member.id)?.close(4002, 'Session expired');
         sockets.delete(member.id);
         party.members.delete(member.id);
         party.ready.delete(member.id);

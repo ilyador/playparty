@@ -110,6 +110,7 @@ input::placeholder { color: #9298a1; opacity: 1; }
 .movie-video { width: 100%; height: 100%; object-fit: contain; display: block; }
 .player-loading, .player-error { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 17px; color: #c5cbd3; background: rgba(8,9,11,.4); font-size: 13px; }
 .player-error { background: rgba(8,9,11,.85); padding: 32px; text-align: center; }
+.player-error .secondary-button { position: relative; z-index: 2; }
 .movie-topline { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px 24px 42px; background: linear-gradient(rgba(0,0,0,.72), transparent); font-size: 14px; opacity: 0; transition: opacity 180ms var(--ease); pointer-events: none; }
 .movie-title { min-width: 0; display: grid; gap: 7px; }
 .movie-title strong { font-size: inherit; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

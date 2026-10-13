@@ -10,6 +10,7 @@ import { syncWatchdog } from './sync-watchdog';
 import { createAdaptiveQuality, type QualityReason } from './adaptive-quality';
 
 type Playback = { url: string; offset: number; quality: string; mediaVersion: number; subtitleMode: 'none' | 'segmented' | 'burn'; remote: boolean; maxBitrate: number; currentBitrate: number };
+const maxBufferGap = 0.2;
 const time = (value: number) => {
   const seconds = Math.max(0, Math.floor(value || 0));
   return seconds >= 3600 ? `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
@@ -76,7 +77,12 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
 
   function ahead(element: HTMLVideoElement, target: number) {
     for (let i = 0; i < element.buffered.length; i++) {
-      if (target >= element.buffered.start(i) - 0.1 && target < element.buffered.end(i)) return Math.max(0, element.buffered.end(i) - target);
+      if (target < element.buffered.start(i) - maxBufferGap || target >= element.buffered.end(i)) continue;
+      let end = element.buffered.end(i);
+      // Audio/video mux boundaries can split otherwise playable buffered data.
+      // Use the same small gap allowance as Hls's playback gap handling.
+      for (let next = i + 1; next < element.buffered.length && element.buffered.start(next) - end <= maxBufferGap; next++) end = element.buffered.end(next);
+      return Math.max(0, end - target);
     }
     return 0;
   }
@@ -253,7 +259,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       setQuality(result.quality);
       if (Hls.isSupported()) {
         renderer.current = 'hls';
-        hls = new Hls({ maxBufferLength: 16, maxMaxBufferLength: 30, backBufferLength: 8, enableWorker: true, manifestLoadingTimeOut: 30000, levelLoadingTimeOut: 30000, fragLoadingTimeOut: 30000 });
+        hls = new Hls({ maxBufferLength: 16, maxMaxBufferLength: 30, backBufferLength: 8, maxBufferHole: maxBufferGap, enableWorker: true, manifestLoadingTimeOut: 30000, levelLoadingTimeOut: 30000, fragLoadingTimeOut: 30000 });
         // Plex marks the requested rendition DEFAULT=YES. Let Hls select it
         // after the active subtitle group exists, rather than during parsing.
         hls.subtitleDisplay = result.subtitleMode === 'segmented';
@@ -297,7 +303,13 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
         }
         return;
       }
-      const seek = seekHealth.current.sample(timestamp, element.seeking, element.readyState >= 3 && (nativeReady(element) || ahead(element, element.currentTime) >= 4));
+      let seekHasData = nativeReady(element) || ahead(element, element.currentTime) >= 4;
+      // A seek inside a genuine hole can stay at HAVE_METADATA even though
+      // later segments are buffered. Reload at the held clock, never skip it.
+      if (element.seeking && !seekHasData) for (let i = 0; i < element.buffered.length; i++) {
+        if (element.buffered.start(i) > element.currentTime && ahead(element, element.buffered.start(i)) >= 4) { seekHasData = true; break; }
+      }
+      const seek = seekHealth.current.sample(timestamp, element.seeking, seekHasData);
       if (seek.stalled) { setLoading(true); holdForBuffer(); }
       if (seek.reload && playback.current && !document.hidden && syncHealth.current.recover(timestamp)) {
         report('seek-recovery');

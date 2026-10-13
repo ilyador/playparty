@@ -86,6 +86,7 @@ export default function App() {
       invalidateState();
       lastStateAt = performance.now();
       let receivedState = false;
+      let bestPongRtt = Infinity;
       const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/events`);
       socket.current = ws;
       ws.onopen = () => {
@@ -104,22 +105,30 @@ export default function App() {
           if (!receivedState) { receivedState = true; setConnectionVersion(version => version + 1); }
           setStateFresh(true);
         }
-        if (message.type === 'pong') setClockOffset(message.serverTime - (Date.now() + message.sent) / 2);
+        if (message.type === 'pong') {
+          const now = Date.now(), rtt = now - message.sent;
+          // Queued outage pongs skew the midpoint estimate by seconds. Keep
+          // only prompt samples near this socket's best observed round trip.
+          if (Number.isFinite(message.sent) && Number.isFinite(message.serverTime) && rtt >= 0 && rtt <= 1000 && rtt <= bestPongRtt + 100) {
+            bestPongRtt = Math.min(bestPongRtt, rtt);
+            setClockOffset(message.serverTime - (now + message.sent) / 2);
+          }
+        }
       };
       ws.onclose = event => {
         if (disposed || leaveRef.current || socket.current !== ws) return;
         invalidateState();
         socket.current = null;
-        if (event?.code === 4001) {
-          // The shared browser cookie now belongs to the replacement tab.
-          // End this tab locally; a Leave request would evict its replacement.
+        if (event?.code === 4001 || event?.code === 4002) {
+          // End a replaced or expired session locally. Its shared cookie may
+          // already belong to another tab, so never send a Leave request.
           leaveRef.current = true;
           clearTimeout(reconnect);
           captureSession.current?.dispose();
           if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
           setFullscreen(false);
           setJoined(null); setParticipants([]); setMic(false); setCamera(false); setSpeaking(false); setDevicesReady(false); setNotice(''); setAudioBlocked(false); setPicker(false);
-          setError('You joined in another tab.');
+          setError(event.code === 4002 ? 'Your session expired. Join again to reconnect.' : 'You joined in another tab.');
           return;
         }
         reconnect = setTimeout(connectEvents, 1500);

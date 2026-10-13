@@ -40,11 +40,11 @@ function module(name, imports = {}, globals = {}) {
   return exports;
 }
 function app(plans, timers = { setInterval, clearInterval }, initialState) {
-  const slots = [], effects = [], rooms = [], sockets = [], requests = [];
+  const slots = [], effects = [], rooms = [], sockets = [], requests = [], audioOutputs = new Set();
   let cursor = 0, tree, identity = 0;
   const events = new EventTarget();
   const movie = { paused: false, pauses: 0, pause() { this.paused = true; this.pauses++; } };
-  const document = { body: { appendChild() {} }, fullscreenElement: null, visibilityState: 'visible',
+  const document = { body: { appendChild(element) { audioOutputs.add(element); } }, fullscreenElement: null, visibilityState: 'visible',
     addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) };
   const media = { permissions: { query: async () => ({ state: 'granted' }) } };
   const capture = module('call-capture.ts', {}, { navigator: media });
@@ -132,7 +132,7 @@ function app(plans, timers = { setInterval, clearInterval }, initialState) {
   }
   render();
   return {
-    rooms, sockets, render, movie, requests,
+    rooms, sockets, render, movie, requests, audioOutputs,
     visibility(value) { document.visibilityState = value; events.dispatchEvent(new Event('visibilitychange')); render(); },
     player: () => find(node => node.type === 'player', tree)?.props,
     button: label => find(node => node.type === 'button' && node.props['aria-label'] === label, tree).props,
@@ -345,6 +345,55 @@ test('a superseded tab ends only its local call, never leaves the shared session
   assert.equal(view.player().stateFresh, true, 'An old terminal close cannot evict a deliberately rejoined call.');
 });
 
+test('expired party membership ends live SDK capture and call audio even after foreground socket replacement', async t => {
+  for (const foreground of [false, true]) await t.test(foreground ? 'foreground replaced the expired socket' : 'current socket expires', async () => {
+    const timer = clock(), initial = tracks(), replacement = tracks();
+    const view = app([{ capture: async () => initial }, { capture: async () => replacement }], timer, movieState);
+    try {
+      await view.join();
+      const old = view.sockets[0]; open(old); receive(old); view.render();
+      // Exercise App's actual remote-output owner; the media element stands in
+      // for a browser audio element, while local capture uses installed SDK tracks.
+      const remote = new EventEmitter();
+      Object.assign(remote, { kind: 'audio', source: Track.Source.Microphone, sid: 'remote-audio', attachedElements: [],
+        attach() { const element = new EventTarget(); Object.assign(element, { paused: false, muted: false, remove: () => view.audioOutputs.delete(element) }); this.attachedElements.push(element); return element; },
+        detach(element) { this.attachedElements = this.attachedElements.filter(attached => attached !== element); return [element]; },
+      });
+      view.rooms[0].emit(RoomEvent.TrackSubscribed, remote, {}, { identity: 'remote' });
+      assert.equal(view.audioOutputs.size, 1);
+      let expired = old;
+      if (foreground) {
+        view.visibility('hidden'); view.visibility('visible');
+        expired = view.sockets[1]; open(expired);
+        old.onclose({ code: 4002 }); view.render();
+        assert.equal(view.joinError(), undefined, 'A late old close cannot evict a replacement before it proves its session expired.');
+        assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'live'));
+      }
+      expired.readyState = 3; expired.onclose({ code: 4002 }); view.render(); await flush(); view.render();
+      assert.equal(view.joinError(), 'Your session expired. Join again to reconnect.');
+      assert.equal(view.player(), undefined, 'An expired session must return to the name form.');
+      assert.equal(view.movie.paused, true);
+      assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'ended'), 'Terminal party expiry must stop native capture independently of a LiveKit event.');
+      assert.equal(view.rooms[0].disconnections, 1);
+      assert.equal(view.audioOutputs.size, 0, 'Terminal expiry must detach every managed remote call-audio output.');
+      assert.deepEqual(view.requests, ['join'], 'Terminal expiry cannot send Leave using a potentially replaced shared cookie.');
+      const count = view.sockets.length;
+      timer.advance(20000); view.render();
+      assert.equal(view.sockets.length, count, 'Expired membership must stop reconnect loops.');
+      await view.join();
+      const current = view.sockets.at(-1); open(current); receive(current); view.render();
+      assert.equal(view.joinError(), undefined);
+      assert.equal(view.player().stateFresh, true);
+      assert.equal(view.rooms[1].requests.length, 1, 'An explicit rejoin must use one fresh combined device capture.');
+      assert.ok(replacement.every(track => track.mediaStreamTrack.readyState === 'live'));
+      old.onclose({ code: 4002 }); expired.onclose({ code: 4002 }); old.onmessage({ data: JSON.stringify({ ...movieState, position: 999 }) }); view.render();
+      assert.equal(view.player().stateFresh, true, 'Old terminal callbacks cannot evict the deliberately rejoined call.');
+      assert.equal(view.player().state.position, 42);
+      assert.ok(replacement.every(track => track.mediaStreamTrack.readyState === 'live'));
+    } finally { view.dispose(); }
+  });
+});
+
 test('the state watchdog is local-only while snapshots arrive and keeps the existing ten-second ping', async t => {
   const timer = clock(), view = app([{ capture: async () => tracks() }], timer, movieState);
   t.after(() => view.dispose());
@@ -360,6 +409,58 @@ test('the state watchdog is local-only while snapshots arrive and keeps the exis
   assert.equal(view.player().connectionVersion, generation, 'Ordinary snapshots must not repeatedly clear player readiness.');
   assert.equal(socket.sent.filter(message => message.type === 'ping').length, initialPings + 2);
   assert.equal(view.rooms.length, 1);
+  assert.equal(view.rooms[0].requests.length, 1);
+});
+
+test('queued and invalid pongs cannot poison the playback clock, and reconnect resets the RTT baseline', async t => {
+  const timer = clock();
+  let now = 110000;
+  const view = app([{ capture: async () => tracks() }], { ...timer, Date: { now: () => now } }, movieState);
+  t.after(() => view.dispose());
+  await view.join();
+  const first = view.sockets[0]; open(first); receive(first); view.render();
+  const pong = (socket, rtt, offset) => {
+    receive(socket, { type: 'pong', sent: now - rtt, serverTime: now - rtt / 2 + offset });
+    view.render();
+  };
+  pong(first, 5033, 2516.5);
+  assert.equal(view.player().clockOffset, 0, 'Even a connection’s first queued outage pong must be ignored.');
+  pong(first, 20, 200);
+  assert.equal(view.player().clockOffset, 200);
+  pong(first, 5033, 2516.5);
+  assert.equal(view.player().clockOffset, 200, 'A retained WebSocket’s five-second queued pong cannot replace its healthy clock.');
+  pong(first, 121, 999);
+  assert.equal(view.player().clockOffset, 200, 'A slower sample outside the best RTT allowance must be ignored even below the absolute limit.');
+  pong(first, 120, 210);
+  assert.equal(view.player().clockOffset, 210, 'Small network jitter can still refresh the estimate.');
+  for (const invalid of [
+    { sent: now + 1, serverTime: now },
+    { sent: '110000', serverTime: now },
+    { sent: now, serverTime: '110000' },
+    { sent: null, serverTime: now },
+    { sent: now, serverTime: NaN },
+    { sent: now, serverTime: Infinity },
+    { serverTime: now },
+  ]) {
+    receive(first, { type: 'pong', ...invalid }); view.render();
+    assert.equal(view.player().clockOffset, 210, 'Nonfinite, nonnumeric or future timestamps cannot change the clock.');
+  }
+  const initialPings = first.sent.filter(message => message.type === 'ping').length;
+  for (let index = 0; index < 5; index++) { now += 2000; timer.advance(2000); receive(first); view.render(); }
+  assert.equal(first.sent.filter(message => message.type === 'ping').length, initialPings + 1, 'Filtering clock samples must retain the existing ten-second ping cadence.');
+  view.visibility('hidden'); view.visibility('visible');
+  const second = view.sockets[1]; open(second); receive(second); view.render();
+  pong(second, 5033, 2516.5);
+  assert.equal(view.player().clockOffset, 210, 'A reconnect retains the last healthy estimate while an initial queued sample is rejected.');
+  pong(second, 250, 300);
+  assert.equal(view.player().clockOffset, 300, 'The replacement socket must establish a fresh baseline for a legitimately slower path.');
+  pong(second, 5, 280);
+  assert.equal(view.player().clockOffset, 280, 'A new low-latency sample must refine the replacement connection’s estimate.');
+  pong(first, 1, 999);
+  assert.equal(view.player().clockOffset, 280, 'An old socket’s pong must still be ignored.');
+  pong(second, 106, 999);
+  assert.equal(view.player().clockOffset, 280, 'The new connection’s lower RTT must tighten its allowance.');
+  assert.equal(view.rooms.length, 1, 'Clock repair must keep the existing call and native capture.');
   assert.equal(view.rooms[0].requests.length, 1);
 });
 

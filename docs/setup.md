@@ -82,15 +82,15 @@ With the Linux services, use `systemctl --user restart playparty.service` instea
 
 ## Playback and browser troubleshooting
 
-Playback waits for four seconds of buffered data and every connected viewer before starting. If a stream buffers, the shared clock pauses until everyone is ready again. A slow transcode is never forced to start by a timeout.
+Playback waits for four seconds of buffered data and every connected viewer before starting. Small audio/video segment gaps up to 200 ms count as playable data. If a stream buffers, the shared clock pauses until everyone is ready again. A slow transcode is never forced to start by a timeout.
 
-Join authorizes the movie player during your tap, and the same video element is retained across stream changes. If a browser still blocks playback, use the normal play control; the shared clock waits. Refreshing or rejoining requires fresh buffer readiness. A stuck seek holds the clock and, when data is available, restarts the affected stream.
+Join authorizes the movie player during your tap, and the same video element is retained across stream changes. If a browser still blocks playback, use the normal play control; the shared clock waits. Refreshing or rejoining requires fresh buffer readiness. A stuck seek holds the clock and, when data is available, restarts the affected stream. This includes seeking into a larger media gap when later segments are buffered; recovery keeps the shared position.
 
-Sync checks run locally in the existing player loop. If two ordinary corrections fail, Playparty restarts only the affected movie stream, with a 30-second cooldown. Pausing, buffering, seeking, and browser permission blocks do not trigger this recovery. If party updates stop arriving for eight seconds, that viewer's movie pauses while the party connection reconnects. Returning to the tab also requests current state. The video call stays connected.
+Sync checks run locally in the existing player loop. If two ordinary corrections fail, Playparty restarts only the affected movie stream, with a 30-second cooldown. Pausing, buffering, seeking, and browser permission blocks do not trigger this recovery. If party updates stop arriving for eight seconds, that viewer's movie pauses while the party connection reconnects. Returning to the tab also requests current state. Movie and state reconnections retain the existing call. Delayed timing replies after an outage are ignored instead of shifting the playback clock.
 
 Temporary movie network failures and playback server errors retry the affected stream with the same cooldown. Other errors offer **Retry movie**, which keeps the call connected. A stream change or failure also revokes readiness while manually paused, so Play waits for a working stream. Joining in another tab ends the older tab's local session instead of letting the tabs repeatedly displace each other.
 
-Disconnected room membership expires after 45 seconds without contact. An expired viewer must leave and rejoin; the screen explains this when the call disconnects. Rejoining waits for fresh media and the current shared timeline.
+Disconnected room membership expires after 45 seconds without contact; an open connection without client traffic expires after 90 seconds. Expiry releases the microphone, camera, and call audio and returns the viewer to Join. This also handles a client waking after suspension. Rejoining waits for fresh media and the current shared timeline.
 
 Private playback logs are written to `data/playback.log`, with two rotated files and a total limit of roughly 6 MB. They record stream decisions, buffer levels, playback drift, readiness, shared pauses/resumes, transcode measurements, and automatic sync recovery. Call diagnostics record actual microphone mute and applied processing, plus audio output counts to detect duplicate playback. They omit names, media titles, tokens, and stream URLs.
 
@@ -124,5 +124,9 @@ Additional two-client fault checks use the same local services and isolated part
 | `test/network-fault-browser.mjs` | A 65-second movie HTTP outage, temporary/permanent playback API errors, and a disconnect long enough to expire membership. |
 | `test/control-race-browser.mjs` | Lost pause updates, leaving during a delayed load, rapid seeks, and Stop/reselection with late responses. |
 | `test/lifecycle-fault-browser.mjs` | Suspended tabs, foreground changes, and duplicate-tab takeover. |
+| `test/rtc-link-fault-browser.mjs` | Linux: pauses and recreates only the isolated guest Chrome network process, verifies real call traffic interruption, then checks sync, mute, capture, and audio cleanup. |
+| `test/webkit-recovery-browser.mjs` | Linux mobile WebKit: real video frames, subtitles, media gaps, Retry/Stop access, refresh/rejoin, HTTP/WebSocket outages, and landscape. |
 
-These use Chrome and fake capture devices. They cannot verify physical iPhone sleep, Safari permission behavior, acoustic echo, or restrictive-network WebRTC routing.
+Use `TEST_LONG_SLEEP=1` with the lifecycle script for genuine 65- and 100-second browser freezes, including mute retention and expired-session cleanup. Install the optional WebKit test browser with `npx playwright install webkit` before running its check.
+
+Chrome tests use fake capture devices; WebKit tests deny physical camera/microphone access. These simulate browser suspension and link interruption. Linux WebKit uses Hls.js/MSE and cannot verify iOS native HLS, physical iPhone sleep, Safari permission persistence, acoustic echo, or an actual cellular/NAT handover.

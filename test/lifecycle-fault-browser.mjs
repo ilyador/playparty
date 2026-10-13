@@ -13,7 +13,9 @@ import { createApp } from '../server/index.mjs';
 import { Plex } from '../server/plex.mjs';
 import { cookies } from '../server/auth.mjs';
 
-const origin = 'http://localhost:5179';
+const longSleep = process.env.TEST_LONG_SLEEP === '1';
+const testPort = longSleep ? 5181 : 5179;
+const origin = `http://localhost:${testPort}`;
 const roomName = `playparty-lifecycle-test-${randomUUID()}`;
 const ownerCookie = randomUUID(), errors = [], failures = [];
 const plex = new Plex({ url: process.env.PLEX_URL, preferences: process.env.PLEX_PREFERENCES, token: process.env.PLEX_TOKEN });
@@ -27,7 +29,7 @@ const instrument = () => {
   if (!navigator.mediaDevices?.getUserMedia) return;
   const NativeSocket = WebSocket, getMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
   window.testSockets = []; window.testCaptures = []; window.testTracks = []; window.testLifecycle = [];
-  window.testStates = []; window.testPlays = []; window.testLastState = null; window.testOffset = 0; window.testTasks = 0;
+  window.testStates = []; window.testPlays = []; window.testPlaying = []; window.testLastState = null; window.testOffset = 0; window.testTasks = 0;
   setInterval(() => window.testTasks++, 250);
   const nativeFetch = fetch.bind(window);
   window.fetch = async (...args) => {
@@ -57,9 +59,13 @@ const instrument = () => {
     if (this.classList.contains('movie-video')) window.testPlays.push({ at: Date.now(), state: window.testLastState, position: this.currentTime });
     return nativePlay.apply(this, args);
   };
+  document.addEventListener('playing', event => {
+    const v = event.target;
+    if (v instanceof HTMLVideoElement && v.classList.contains('movie-video')) window.testPlaying.push({ at: Date.now(), state: window.testLastState, paused: v.paused, position: v.currentTime });
+  }, true);
   for (const type of ['freeze', 'resume', 'visibilitychange']) document.addEventListener(type, () => {
     const v = document.querySelector('.movie-video');
-    window.testLifecycle.push({ type, at: Date.now(), hidden: document.hidden, paused: v?.paused, position: v?.currentTime });
+    window.testLifecycle.push({ type, at: Date.now(), hidden: document.hidden, paused: v?.paused, position: v?.currentTime, tasks: window.testTasks });
   });
 };
 const playing = () => { const v = document.querySelector('.movie-video'); return v && !v.paused && v.readyState >= 3 && v.currentTime > 2; };
@@ -76,7 +82,7 @@ const run = async (label, task) => {
 };
 try {
   await call.createRoom({ name: roomName });
-  await new Promise(resolve => server.listen(5179, '127.0.0.1', resolve));
+  await new Promise(resolve => server.listen(testPort, '127.0.0.1', resolve));
   const library = (await plex.library()).filter(item => item.type === 'movie');
   assert.ok(library.length >= 2, 'Lifecycle movie-change testing needs at least two movies.');
   const first = library.find(item => item.title === process.env.TEST_MOVIE) || library[0];
@@ -118,7 +124,7 @@ try {
   guestSession = await guestContext.newCDPSession(guest);
   await guest.bringToFront();
 
-  await run('Fifteen-second real page freeze with host pause', async () => {
+  if (!longSleep) await run('Fifteen-second real page freeze with host pause', async () => {
     const before = await guest.evaluate(() => ({ position: document.querySelector('.movie-video').currentTime, plays: window.testPlays.length, tasks: window.testTasks }));
     await placeholder.bringToFront();
     await guestSession.send('Page.setWebLifecycleState', { state: 'frozen' });
@@ -139,7 +145,7 @@ try {
     assert.equal(after.captures, 1, 'Lifecycle resume cannot reacquire call devices.');
   });
 
-  await run('Frozen guest follows movie change and paused seek', async () => {
+  if (!longSleep) await run('Frozen guest follows movie change and paused seek', async () => {
     await placeholder.bringToFront();
     await guestSession.send('Page.setWebLifecycleState', { state: 'frozen' });
     await post('select', { id: second.id });
@@ -162,7 +168,7 @@ try {
     assert.equal(party.currentPosition(), 90);
   });
 
-  await run('Repeated foreground transitions preserve one call and state socket', async () => {
+  if (!longSleep) await run('Repeated foreground transitions preserve one call and state socket', async () => {
     assert.equal(await guest.evaluate(() => document.visibilityState), 'visible');
     const beforeSockets = await guest.evaluate(() => window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length);
     for (let index = 0; index < 4; index++) {
@@ -192,7 +198,124 @@ try {
     }
   });
 
-  await run('Same-cookie second owner tab cannot trigger a reconnect fight', async () => {
+  if (longSleep) {
+    const clockKeys = ['mediaVersion', 'readinessVersion', 'updatedAt', 'position', 'paused', 'waiting'];
+    const stableAfterWake = async (label, expectedCaptures) => {
+      let healthySince = 0, samples = 0, maxClockDrift = 0, maxPairDrift = 0;
+      const deadline = Date.now() + 60000;
+      while (Date.now() < deadline && (!healthySince || Date.now() - healthySince < 10000)) {
+        const state = party.snapshot();
+        const readings = await Promise.all([owner, guest].map(page => page.evaluate(() => {
+          const v = document.querySelector('.movie-video');
+          return { time: v.currentTime + window.testOffset, at: Date.now(), paused: v.paused,
+            state: window.testLastState, ready: v.readyState,
+            sockets: window.testSockets.filter(socket => new URL(socket.url).pathname === '/events' && socket.readyState === WebSocket.OPEN).length,
+            captures: window.testCaptures.length, tracks: window.testTracks.filter(track => track.readyState === 'live').length,
+            outputs: document.querySelectorAll('audio.call-audio').length };
+        })));
+        const after = party.snapshot();
+        const unchanged = clockKeys.every(key => state[key] === after[key]);
+        const healthy = unchanged && !state.paused && !state.waiting && readings.every((reading, index) =>
+          !reading.paused && reading.ready >= 3 && reading.sockets === 1 && reading.outputs === 1 && reading.tracks === 2 &&
+          reading.captures === (index === 0 ? 1 : expectedCaptures) && reading.state && clockKeys.every(key => reading.state[key] === state[key]) &&
+          Math.abs(reading.time - (state.position + Math.max(0, reading.at - state.updatedAt) / 1000)) < 1);
+        if (healthy) {
+          healthySince ||= Date.now(); samples++;
+          for (const reading of readings) maxClockDrift = Math.max(maxClockDrift, Math.abs(reading.time - (state.position + Math.max(0, reading.at - state.updatedAt) / 1000)));
+          maxPairDrift = Math.max(maxPairDrift, Math.abs(readings[0].time - readings[1].time - (readings[0].at - readings[1].at) / 1000));
+        } else healthySince = 0;
+        await delay(500);
+      }
+      assert.ok(healthySince && Date.now() - healthySince >= 10000, `${label} must sustain ten seconds of actual playing frames against an immutable shared checkpoint.`);
+      assert.ok(samples >= 20, 'Recovery must include repeated stable samples rather than a single lucky reading.');
+      console.log(`${label}: ${samples} healthy readings; shared drift ${maxClockDrift.toFixed(3)}s; pair drift ${maxPairDrift.toFixed(3)}s.`);
+    };
+    const guestId = [...party.members.keys()].find(id => id !== 'owner');
+    assert.ok(guestId);
+
+    await run('Sixty-five-second genuine freeze retains muted choice and current paused seek', async () => {
+      await guest.getByRole('button', { name: 'Mute microphone', exact: true }).click();
+      await guest.getByRole('button', { name: 'Turn on microphone', exact: true }).waitFor();
+      await guest.waitForFunction(() => window.testTracks.some(track => track.kind === 'audio' && track.readyState === 'live' && !track.enabled));
+      const before = await guest.evaluate(() => ({ tasks: window.testTasks, lifecycle: window.testLifecycle.length, plays: window.testPlays.length, playing: window.testPlaying.length, captures: window.testCaptures.length }));
+      await placeholder.bringToFront();
+      await guestSession.send('Page.setWebLifecycleState', { state: 'frozen' });
+      await delay(20000);
+      assert.ok(!party.paused && !party.wantsPlay, 'The host must genuinely keep playing during the first twenty seconds of the guest’s sleep.');
+      await post('control', { action: 'pause' });
+      await post('control', { action: 'seek', position: 150 });
+      await delay(45000);
+      assert.ok(party.members.has(guestId), 'A connected sixty-five-second frozen client must still be inside the real ninety-second member lifetime.');
+      assert.ok(Date.now() - party.members.get(guestId).lastSeen >= 60000, 'The frozen guest must actually stop JS heartbeat/readiness traffic during sleep.');
+      assert.equal(party.currentPosition(), 150, 'A host’s paused seek must stay stationary throughout the remaining sleep.');
+      await guestSession.send('Page.setWebLifecycleState', { state: 'active' });
+      await guest.bringToFront();
+      await guest.waitForFunction(() => {
+        const v = document.querySelector('.movie-video');
+        return v?.paused && v.readyState >= 3 && Math.abs(v.currentTime + window.testOffset - 150) < 1;
+      }, undefined, { timeout: 60000 });
+      const after = await guest.evaluate(before => ({ tasks: window.testTasks, lifecycle: window.testLifecycle.slice(before.lifecycle), plays: window.testPlays.slice(before.plays), playing: window.testPlaying.slice(before.playing),
+        captures: window.testCaptures.length, audio: window.testTracks.filter(track => track.kind === 'audio' && track.readyState === 'live').map(track => ({ enabled: track.enabled, muted: track.muted })) }), before);
+      assert.ok(after.lifecycle.some(event => event.type === 'freeze') && after.lifecycle.some(event => event.type === 'resume'), 'The long sleep must deliver genuine lifecycle suspension events.');
+      assert.ok(after.lifecycle.find(event => event.type === 'resume').tasks - after.lifecycle.find(event => event.type === 'freeze').tasks <= 2, 'The sixty-five-second freeze must stop the real page timer until resume.');
+      assert.ok(after.plays.every(play => play.state?.paused), 'Waking cannot request stale playing state after the host paused.');
+      assert.ok(after.playing.every(event => event.paused), 'Waking to a paused host must not actually start stale video/audio, including native resumes.');
+      assert.equal(after.captures, before.captures, 'Waking a retained call cannot reacquire devices.');
+      assert.equal(after.audio.length, 1);
+      assert.equal(after.audio[0].enabled, false, 'The deliberately muted native microphone must remain disabled after waking.');
+      await guest.getByRole('button', { name: 'Turn on microphone', exact: true }).waitFor();
+      await post('control', { action: 'play' });
+      await stableAfterWake('Sixty-five-second wake', 1);
+      await guest.getByRole('button', { name: 'Turn on microphone', exact: true }).click();
+      await guest.getByRole('button', { name: 'Mute microphone', exact: true }).waitFor();
+    });
+
+    await run('Hundred-second genuine freeze expires safely and explicit rejoin catches current playback', async () => {
+      // Begin with a refreshed real connection so the ninety-second lifetime is
+      // measured from this sleep, rather than inherited from the first case.
+      await guest.bringToFront();
+      await guest.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await guest.waitForFunction(() => window.testSockets.filter(socket => new URL(socket.url).pathname === '/events' && socket.readyState === WebSocket.OPEN).length === 1);
+      await guest.waitForFunction(playing, undefined, { timeout: 60000 });
+      const before = await guest.evaluate(() => {
+        window.testSuspendedMovie = document.querySelector('.movie-video');
+        return { tasks: window.testTasks, lifecycle: window.testLifecycle.length, plays: window.testPlays.length, playing: window.testPlaying.length };
+      });
+      await placeholder.bringToFront();
+      await guestSession.send('Page.setWebLifecycleState', { state: 'frozen' });
+      await delay(20000);
+      await post('control', { action: 'pause' });
+      await post('control', { action: 'seek', position: 240 });
+      await post('control', { action: 'play' });
+      assert.ok(party.paused && party.wantsPlay, 'A sleeping connected viewer must not falsely acknowledge the new seek.');
+      await delay(80000);
+      assert.ok(!party.members.has(guestId), 'The sleep must exceed the actual ninety-second connected member lifetime.');
+      assert.equal(party.ready.has(guestId), false, 'Expiry must remove the frozen client’s readiness.');
+      assert.ok(!party.paused && !party.wantsPlay && party.currentPosition() > 240, 'The active host must resume once the expired viewer is removed.');
+      await guestSession.send('Page.setWebLifecycleState', { state: 'active' });
+      await guest.bringToFront();
+      await guest.locator('#name').waitFor({ timeout: 30000 });
+      assert.equal(await guest.locator('.inline-error').textContent(), 'Your session expired. Join again to reconnect.');
+      await guest.waitForFunction(() => window.testTracks.every(track => track.readyState === 'ended') && window.testSuspendedMovie?.paused, undefined, { timeout: 30000 });
+      const after = await guest.evaluate(before => ({ tasks: window.testTasks, lifecycle: window.testLifecycle.slice(before.lifecycle), plays: window.testPlays.slice(before.plays), playing: window.testPlaying.slice(before.playing),
+        liveSockets: window.testSockets.filter(socket => new URL(socket.url).pathname === '/events' && socket.readyState === WebSocket.OPEN).length,
+        liveTracks: window.testTracks.filter(track => track.readyState === 'live').length, outputs: document.querySelectorAll('audio.call-audio').length,
+        position: window.testSuspendedMovie.currentTime }), before);
+      assert.ok(after.lifecycle.some(event => event.type === 'freeze') && after.lifecycle.some(event => event.type === 'resume'));
+      assert.ok(after.lifecycle.find(event => event.type === 'resume').tasks - after.lifecycle.find(event => event.type === 'freeze').tasks <= 2, 'The hundred-second freeze must stop the real page timer until resume.');
+      assert.equal(after.liveSockets, 0, 'An expired client cannot own a live party state socket.');
+      assert.equal(after.liveTracks, 0, 'An expired sleeping client must release microphone and camera.');
+      assert.equal(after.outputs, 0, 'An expired call must detach its remote audio outputs.');
+      assert.equal(after.plays.length, 0, 'An expired wake must not start the movie from queued old state.');
+      assert.ok(after.playing.every(event => event.paused), 'An expired wake must not actually start stale movie audio, including native resumes.');
+      await delay(2500);
+      assert.equal(await guest.evaluate(() => window.testSuspendedMovie.currentTime), after.position, 'Expired movie playback cannot creep while waiting for an explicit rejoin.');
+      await join(guest, 'Lifecycle Guest');
+      await stableAfterWake('Hundred-second expiry and rejoin', 2);
+    });
+  }
+
+  if (!longSleep) await run('Same-cookie second owner tab cannot trigger a reconnect fight', async () => {
     const oldSockets = await owner.evaluate(() => window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length);
     const replacement = await ownerContext.newPage(); replacement.on('pageerror', error => errors.push(error.message));
     await replacement.goto(origin); await join(replacement, 'Replacement Host', true);
