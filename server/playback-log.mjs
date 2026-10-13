@@ -1,13 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const events = new Set(['sample', 'waiting', 'playing', 'ready', 'correction', 'fatal', 'needs-gesture']);
-const numeric = ['mediaVersion', 'position', 'target', 'drift', 'bufferAhead', 'readyState', 'rate'];
+const events = new Set(['sample', 'waiting', 'playing', 'ready', 'correction', 'seek-recovery', 'fatal', 'needs-gesture', 'capture-request', 'capture-ready', 'capture-error', 'microphone-status', 'call-audio-status', 'call-audio-output', 'movie-audio', 'quality-change']);
+const numeric = ['mediaVersion', 'position', 'target', 'drift', 'bufferAhead', 'readyState', 'rate', 'captionTracks', 'captionCues', 'maxBitrate'];
 export function playbackMetrics(message) {
   if (!events.has(message.event)) return null;
   const result = { event: message.event };
+  for (const key of ['callAudioTracks', 'callAudioElements', 'callAudioPlaying', 'callAudioDuplicates', 'callAudioUnexpected']) if (Number.isInteger(message[key]) && message[key] >= 0 && message[key] <= 20) result[key] = message[key];
   for (const key of numeric) if (Number.isFinite(message[key]) && Math.abs(message[key]) <= 1e7) result[key] = Math.round(message[key] * 1000) / 1000;
-  for (const key of ['paused', 'waiting', 'seeking']) if (typeof message[key] === 'boolean') result[key] = message[key];
+  for (const key of ['paused', 'waiting', 'seeking', 'sharedPaused', 'needsGesture', 'captionsShowing', 'audio', 'video', 'microphonePublished', 'microphoneEnabled', 'microphoneMuted', 'microphoneUserMuted', 'echoCancellation', 'noiseSuppression', 'autoGainControl', 'canPlaybackAudio', 'speech', 'ducked', 'volumeWritable', 'movieMuted']) if (typeof message[key] === 'boolean') result[key] = message[key];
+  for (const key of ['microphonePermission', 'cameraPermission']) if (['granted', 'prompt', 'denied'].includes(message[key])) result[key] = message[key];
+  if (['live', 'ended'].includes(message.microphoneReadyState)) result.microphoneReadyState = message.microphoneReadyState;
+  if (['NotAllowedError', 'NotFoundError', 'NotReadableError', 'OverconstrainedError', 'AbortError', 'SecurityError', 'TypeError', 'Error', 'UnknownError'].includes(message.captureError)) result.captureError = message.captureError;
+  if (['hls', 'native'].includes(message.renderer)) result.renderer = message.renderer;
+  if (['bandwidth', 'stall', 'recovery'].includes(message.qualityReason)) result.qualityReason = message.qualityReason;
   return result;
 }
 

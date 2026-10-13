@@ -139,7 +139,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
       await plex.stop(previous.id);
       call?.removeParticipant(roomName, previous.id).catch(() => {});
     }
-    member.localOwner = owner && localNetwork(req.ip);
+    member.local = localNetwork(req.ip);
     member.device = /iphone/i.test(req.headers['user-agent'] || '') ? 'iphone' : /android/i.test(req.headers['user-agent'] || '') ? 'android' : 'desktop';
     sessions.set(sid, member);
     const token = new AccessToken(livekitKey, livekitSecret, { identity: member.id, name: member.name, ttl: '6h', metadata: JSON.stringify({ owner: member.owner }) });
@@ -152,6 +152,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     const progress = member.owner ? saveProgress('stopped') : Promise.resolve();
     sockets.get(member.id)?.close();
     party.members.delete(member.id);
+    party.ready.delete(member.id);
     party.startIfReady();
     sessions.delete(cookies(req.headers.cookie).playparty_session);
     await plex.stop(member.id);
@@ -214,14 +215,18 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
   });
   app.post('/api/playback', requireMember, async (req, res) => {
     if (!party.movie) return res.status(404).json({ error: 'The host has not chosen anything yet.' });
-    const count = Math.max(1, [...party.members.values()].filter(m => m.connected && !m.localOwner).length);
-    const allowance = req.member.localOwner ? 80000 : Math.floor(Number(movieMbps) * 1000 * 0.85 / count);
+    const count = Math.max(1, [...party.members.values()].filter(m => m.connected && !m.local).length);
+    const remote = !req.member.local;
+    const allowance = remote ? Math.max(1500, Math.floor(Number(movieMbps) * 1000 * 0.85 / count)) : 0;
+    const requested = req.body?.maxBitrate;
+    const currentBitrate = remote ? typeof requested === 'number' && Number.isFinite(requested) && requested >= 1500 ? Math.min(allowance, Math.floor(requested)) : allowance : 0;
+    const qualityReason = ['bandwidth', 'stall', 'recovery'].includes(req.body?.qualityReason) ? req.body.qualityReason : 'initial';
     const version = party.mediaVersion;
     const previous = playbackLocks.get(req.member.id) || Promise.resolve();
     const start = previous.catch(() => {}).then(async () => {
       if (version !== party.mediaVersion) throw Object.assign(new Error('The movie changed. Reconnect to watch.'), { status: 409 });
       const result = await plex.start(req.member.id, { ...party.movie, version }, {
-        position: party.currentPosition(), hevc: req.body?.hevc === true, maxBitrate: allowance,
+        position: party.currentPosition(), hevc: req.body?.hevc === true, maxBitrate: currentBitrate, remote, adaptive: remote && currentBitrate < allowance,
         subtitleId: typeof req.body?.subtitleId === 'string' ? req.body.subtitleId : '',
       });
       if (version !== party.mediaVersion) {
@@ -233,10 +238,10 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     playbackLocks.set(req.member.id, start);
     try {
       const result = await start;
-      logPlayback({ event: 'stream-start', viewer: req.member.id, device: req.member.device, mediaVersion: version, position: party.currentPosition(), quality: result.quality, subtitleMode: result.subtitleMode });
+      logPlayback({ event: 'stream-start', viewer: req.member.id, device: req.member.device, mediaVersion: version, position: party.currentPosition(), quality: result.quality, subtitleMode: result.subtitleMode, remote, maxBitrate: currentBitrate, qualityReason });
       const details = plex.streams.get(req.member.id)?.diagnostics;
       if (details) logPlayback({ event: 'stream-decision', viewer: req.member.id, mediaVersion: version, ...details });
-      res.json({ ...result, mediaVersion: version });
+      res.json({ ...result, mediaVersion: version, remote, maxBitrate: allowance, currentBitrate });
     } catch (error) { logPlayback({ event: 'stream-error', viewer: req.member.id, mediaVersion: version, status: error.status || 500 }); throw error; }
     finally { if (playbackLocks.get(req.member.id) === start) playbackLocks.delete(req.member.id); }
   });
@@ -258,7 +263,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
       const value = upstream.headers.get(header);
       if (value) res.setHeader(header, value);
     }
-    if (req.member.localOwner) await pipeline(Readable.fromWeb(upstream.body), res);
+    if (req.member.local) await pipeline(Readable.fromWeb(upstream.body), res);
     else await pipeline(Readable.fromWeb(upstream.body), budget.limiter(), res);
   });
 
@@ -278,8 +283,10 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
       sockets.set(session.id, ws);
       session.connected = true;
       session.lastSeen = Date.now();
+      party.ready.delete(session.id);
       if (party.movie && party.buffering(session.id, party.mediaVersion)) logPlayback({ event: 'join-wait', viewer: session.id, mediaVersion: party.mediaVersion, position: party.position });
       ws.on('message', raw => {
+        if (sockets.get(session.id) !== ws || !party.members.has(session.id)) return;
         try {
           const message = JSON.parse(raw.toString());
           session.lastSeen = Date.now();
@@ -298,9 +305,20 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
             }
             broadcast();
           }
-          if (message.type === 'telemetry' && Date.now() - (session.lastTelemetryAt || 0) >= 1000) {
+          if (message.type === 'telemetry') {
             const metrics = playbackMetrics(message);
-            if (metrics) { session.lastTelemetryAt = Date.now(); logPlayback({ ...metrics, viewer: session.id, device: session.device }); }
+            const diagnostic = metrics && /^(capture-|microphone-|call-audio-|movie-audio)/.test(metrics.event);
+            if (diagnostic) {
+              const now = Date.now();
+              if (!session.deviceTelemetry || now - session.deviceTelemetry.since >= 1000) session.deviceTelemetry = { since: now, count: 0, seen: new Map() };
+              const key = JSON.stringify(metrics);
+              if (session.deviceTelemetry.count < 12 && session.deviceTelemetry.seen.get(metrics.event) !== key) {
+                session.deviceTelemetry.count++; session.deviceTelemetry.seen.set(metrics.event, key);
+                logPlayback({ ...metrics, viewer: session.id, device: session.device });
+              }
+            } else if (metrics && Date.now() - (session.lastTelemetryAt || 0) >= 1000) {
+              session.lastTelemetryAt = Date.now(); logPlayback({ ...metrics, viewer: session.id, device: session.device });
+            }
           }
         } catch {}
       });

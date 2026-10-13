@@ -179,7 +179,7 @@ export class Plex {
       videoDecision: ['copy', 'transcode'].includes(row.videoDecision) ? row.videoDecision : 'unknown' };
   }
 
-  async start(identity, movie, { position = 0, hevc = false, maxBitrate = 50000, subtitleId = '' } = {}) {
+  async start(identity, movie, { position = 0, hevc = false, maxBitrate = 50000, subtitleId = '', remote, adaptive = false } = {}) {
     const item = await this.metadata(movie.id);
     const subtitle = this.subtitleTracks(item).find(track => track.id === subtitleId);
     if (subtitleId && !subtitle) throw Object.assign(new Error('This subtitle track is unavailable. Choose another track.'), { status: 400 });
@@ -192,14 +192,16 @@ export class Plex {
     const stream = { id: randomUUID(), identity, session, resourceIds: new Set(), targets: new Map(), version: movie.version };
     this.streams.set(identity, stream);
     const codecs = hevc ? 'h264,hevc' : 'h264';
+    const bitrate = Number.isFinite(maxBitrate) ? Math.max(1500, Math.floor(maxBitrate)) : 50000;
+    const reducedResolution = remote !== false && adaptive;
+    const resolution = reducedResolution && bitrate <= 4000 ? '1280x720' : reducedResolution && bitrate <= 12000 ? '1920x1080' : '3840x2160';
     const params = new URLSearchParams({
       path: `/library/metadata/${movie.id}`, mediaIndex: '0', partIndex: '0',
       protocol: 'hls', directPlay: '0', directStream: '1', directStreamAudio: '1',
-      hasMDE: '1', location: 'wan', fastSeek: '1', offset: String(Math.max(0, position)),
+      hasMDE: '1', location: remote === false ? 'lan' : 'wan', fastSeek: '1', offset: String(Math.max(0, position)),
       session, 'X-Plex-Session-Identifier': session, transcodeSessionId: session,
-      videoBitrate: String(Math.max(1500, Math.floor(maxBitrate))),
-      maxVideoBitrate: String(Math.max(1500, Math.floor(maxBitrate))),
-      videoResolution: '3840x2160', videoQuality: '100', audioBoost: '100',
+      ...(remote === false ? {} : { videoBitrate: String(bitrate), maxVideoBitrate: String(bitrate) }),
+      videoResolution: resolution, videoQuality: '100', audioBoost: '100',
       subtitles: subtitle ? subtitle.burn ? 'burn' : 'segmented' : 'none',
       ...(subtitle ? { subtitleStreamID: subtitle.id, advancedSubtitles: subtitle.burn ? 'burn' : 'text' } : {}),
       copyts: '1', secondsPerSegment: '2',
@@ -211,7 +213,7 @@ export class Plex {
       const chosen = array(decision.Metadata)[0]?.Media?.[0];
       const tracks = array(chosen?.Part?.[0]?.Stream);
       const video = tracks.find(track => Number(track.streamType) === 1);
-      stream.diagnostics = { videoDecision: video?.decision, inputCodec: media?.videoCodec, maxBitrate };
+      stream.diagnostics = { videoDecision: video?.decision, inputCodec: media?.videoCodec, maxBitrate: remote === false ? 0 : bitrate };
       const start = new URL(`/video/:/transcode/universal/start.m3u8?${params}`, this.url);
       return {
         url: this.addResource(stream, start.toString()),

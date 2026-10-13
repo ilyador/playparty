@@ -10,10 +10,11 @@ import { cookies } from '../server/auth.mjs';
 
 const plex = new Plex({ url: process.env.PLEX_URL, preferences: process.env.PLEX_PREFERENCES, token: process.env.PLEX_TOKEN });
 const testOwner = randomUUID();
-const { server, close } = createApp({ plex, authenticateOwner: header => cookies(header).test_owner === testOwner,
+const playbackEvents = [];
+const { server, party, close } = createApp({ plex, authenticateOwner: header => cookies(header).test_owner === testOwner,
   livekitKey: process.env.LIVEKIT_API_KEY, livekitSecret: process.env.LIVEKIT_API_SECRET,
   livekitUrl: 'ws://localhost:7880', origin: 'http://localhost:5176', movieMbps: 70, roomName: `playparty-test-${randomUUID()}`, recordProgress: false,
-  assetsRoot: process.env.TEST_BUILD_DIR ? path.resolve(process.env.TEST_BUILD_DIR) : undefined });
+  assetsRoot: process.env.TEST_BUILD_DIR ? path.resolve(process.env.TEST_BUILD_DIR) : undefined, logPlayback: sample => playbackEvents.push(sample) });
 await new Promise(resolve => server.listen(5176, '127.0.0.1', resolve));
 let browser;
 const output = '.impeccable/review';
@@ -24,6 +25,7 @@ const instrument = () => {
   const Native = window.RTCPeerConnection;
   window.testPeers = [];
   window.testMediaRequests = [];
+  for (const name of ['play', 'playing', 'timeupdate']) document.addEventListener(name, event => { if (window.testMissingMediaEvents && event.target?.classList.contains('movie-video')) event.stopImmediatePropagation(); }, true);
   const getMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
   navigator.mediaDevices.getUserMedia = constraints => { window.testMediaRequests.push(constraints); return getMedia(constraints); };
   window.RTCPeerConnection = class extends Native { constructor(...args) { super(...args); window.testPeers.push(this); } };
@@ -75,16 +77,32 @@ try {
   assert.ok(capture[0].audio && capture[0].video);
   assert.equal(capture[0].audio.echoCancellation, true);
   assert.equal(capture[0].audio.noiseSuppression, true);
+  assert.ok(playbackEvents.some(sample => sample.event === 'capture-request'), 'Actual capture attempts must reach diagnostics.');
+  assert.ok(playbackEvents.some(sample => sample.event === 'microphone-status' && sample.microphoneEnabled && sample.echoCancellation), 'Diagnostics must distinguish a working microphone and applied cancellation.');
   console.log('Real movie playback and a single camera/microphone request with echo cancellation connected.');
 
-  const guestContext = await browser.newContext({ permissions: ['camera', 'microphone'] });
+  const guestContext = await browser.newContext({ permissions: ['camera', 'microphone'], ...(process.env.TEST_REMOTE === '1' ? { extraHTTPHeaders: { 'X-Forwarded-For': '198.51.100.10' } } : {}) });
   await guestContext.addInitScript(instrument);
   const guest = await guestContext.newPage();
+  const remoteNetwork = process.env.TEST_REMOTE === '1' ? await guestContext.newCDPSession(guest) : null;
+  const guestStreams = [];
+  guest.on('response', async response => { if (response.url().endsWith('/api/playback') && response.ok()) guestStreams.push(await response.json()); });
+  if (remoteNetwork) await remoteNetwork.send('Network.emulateNetworkConditions', { offline: false, latency: 20, downloadThroughput: 200000, uploadThroughput: 1000000 });
   guest.on('pageerror', error => errors.push(error.message));
   await guest.goto('http://localhost:5176');
   await guest.locator('#name').fill('Test Guest');
   await guest.getByRole('button', { name: 'Join', exact: true }).click();
   await guest.waitForFunction(playing, undefined, { timeout: 45000 });
+  if (process.env.TEST_REMOTE === '1') {
+    const deadline = Date.now() + 45000;
+    while (!guestStreams.some(stream => stream.remote && stream.currentBitrate < stream.maxBitrate) && Date.now() < deadline) await guest.waitForTimeout(250);
+    assert.ok(guestStreams.some(stream => stream.remote && stream.currentBitrate < stream.maxBitrate), 'Only the remote viewer must request a lower stream cap under pressure.');
+    await remoteNetwork.send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+    await page.waitForFunction(playing, undefined, { timeout: 45000 });
+    await guest.waitForFunction(playing, undefined, { timeout: 45000 });
+    assert.ok(playbackEvents.some(sample => sample.event === 'stream-start' && sample.viewer === 'owner' && sample.remote === false && sample.maxBitrate === 0), 'Local playback must retain its unrestricted compatible stream.');
+    console.log('Throttled remote playback lowered its own Plex stream cap and resumed; local playback remained unrestricted.');
+  }
   assert.ok(Math.abs(await page.locator('.movie-video').evaluate(v => v.currentTime) - await guest.locator('.movie-video').evaluate(v => v.currentTime)) < 1, 'Viewers must start within one second of each other.');
   await page.waitForFunction(() => [...document.querySelectorAll('.face video.visible')].length >= 2, undefined, { timeout: 25000 });
   const media = await page.evaluate(async () => {
@@ -95,6 +113,11 @@ try {
   });
   assert.ok(media.some(track => track.kind === 'video' && track.frames > 0));
   assert.ok(media.some(track => track.kind === 'audio' && track.bytes > 0));
+  await page.getByRole('button', { name: 'Mute microphone', exact: true }).click();
+  assert.ok(await page.evaluate(() => window.testPeers.flatMap(pc => pc.getSenders()).filter(s => s.track?.kind === 'audio').every(s => s.track.enabled === false)), 'Mute must disable native outgoing microphone tracks.');
+  await page.getByRole('button', { name: 'Turn on microphone', exact: true }).click();
+  assert.ok(await page.evaluate(() => window.testPeers.flatMap(pc => pc.getSenders()).filter(s => s.track?.kind === 'audio').every(s => s.track.enabled === true)));
+  assert.equal(await page.evaluate(() => window.testMediaRequests.length), 1, 'Microphone mute/unmute must retain the existing capture.');
 
   await page.setViewportSize({ width: 852, height: 393 });
   const landscape = await page.evaluate(() => {
@@ -119,8 +142,8 @@ try {
   assert.equal(landscape.scrollHeight, landscape.height);
   await screenshot('player-landscape');
 
-  // A browser can reject one autoplay attempt, then start playback through a
-  // different path. The prompt must follow actual playback, not that old error.
+  // A real autoplay refusal must hold the clock and use the ordinary transport
+  // control. It must never paint a separate button over a running movie.
   await page.evaluate(() => {
     const video = document.querySelector('.movie-video');
     video.testNativePlay = video.play.bind(video);
@@ -131,12 +154,18 @@ try {
       return video.testNativePlay();
     };
   });
-  await page.getByRole('button', { name: 'Tap to watch', exact: true }).waitFor();
-  await page.evaluate(() => document.querySelector('.movie-video').testNativePlay());
+  await page.getByRole('button', { name: 'Start playback', exact: true }).waitFor();
+  assert.equal(await page.locator('.watch-prompt').count(), 0);
+  await page.waitForFunction(async () => (await (await fetch('/api/session')).json()).state.waiting);
+  const blockedPosition = party.currentPosition();
+  await page.waitForTimeout(2200);
+  assert.equal(party.currentPosition(), blockedPosition, 'An autoplay-blocked viewer cannot chase a moving timeline by seeking.');
+  await page.evaluate(() => { window.testMissingMediaEvents = true; });
+  await page.getByRole('button', { name: 'Start playback', exact: true }).click();
   await page.waitForFunction(playing);
-  await page.waitForFunction(() => !document.querySelector('.watch-prompt'));
-  await page.evaluate(() => { const video = document.querySelector('.movie-video'); video.play = video.testNativePlay; });
-  console.log('Mobile landscape fills the screen, overlays a horizontal 16:10 call row, and splits right-edge controls; a stale autoplay prompt clears on playback.');
+  await page.waitForFunction(() => !document.querySelector('.playback-blocked'));
+  await page.evaluate(() => { window.testMissingMediaEvents = false; const video = document.querySelector('.movie-video'); video.play = video.testNativePlay; });
+  console.log('Mobile landscape fills the screen; real autoplay refusal holds the shared clock and resumes through the normal controls, without a movie overlay.');
   await page.setViewportSize({ width: 1440, height: 900 });
 
   await page.mouse.move(400, 300);
@@ -146,15 +175,15 @@ try {
     const movie = document.querySelector('.movie-video').getBoundingClientRect();
     const faces = document.querySelector('.people-strip').getBoundingClientRect();
     return { width: movie.width, height: movie.height, viewportWidth: innerWidth, viewportHeight: innerHeight,
-      centered: Math.abs(faces.left + faces.width / 2 - innerWidth / 2) < 2,
-      bottom: faces.top > innerHeight / 2 && faces.bottom < innerHeight,
+      right: Math.abs(innerWidth - faces.right - 16) < 2,
+      top: Math.abs(faces.top - 16) < 2,
       inside: faces.left >= 0 && faces.right <= innerWidth };
   });
   assert.equal(overlay.width, overlay.viewportWidth);
   assert.equal(overlay.height, overlay.viewportHeight);
-  assert.ok(overlay.centered && overlay.bottom && overlay.inside);
+  assert.ok(overlay.right && overlay.top && overlay.inside);
   assert.equal(await page.locator('.people-strip .face').first().evaluate(face => face.getBoundingClientRect().width), 237);
-  assert.equal(await page.locator('.people-strip .face').first().evaluate(face => face.getBoundingClientRect().height), 180);
+  assert.ok(Math.abs(await page.locator('.people-strip .face').first().evaluate(face => face.getBoundingClientRect().height) - 237 / 1.6) < 1);
   await page.mouse.move(10, 10);
   await page.waitForFunction(() => getComputedStyle(document.querySelector('.movie-controls')).opacity === '0', undefined, { timeout: 45000 });
   await screenshot('fullscreen-desktop');
@@ -163,7 +192,22 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.evaluate(() => document.exitFullscreen());
   await page.setViewportSize({ width: 1440, height: 900 });
-  console.log('Fullscreen fills the viewport and keeps the live call centered over the movie.');
+  console.log('Fullscreen fills the viewport and keeps the live call at the top right.');
+
+  await post('control', { action: 'pause' });
+  await page.waitForFunction(() => document.querySelector('.movie-video').paused);
+  await page.evaluate(() => { const video = document.querySelector('.movie-video'); video.testNativePlay().catch(() => {}); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.waitForFunction(() => document.querySelector('.movie-video').paused);
+  await page.waitForTimeout(600);
+  assert.equal(await page.locator('.movie-video').evaluate(v => v.paused), true, 'A delayed play request must not resume a shared pause after a tab switch.');
+  await post('control', { action: 'play' });
+  await page.waitForFunction(playing);
+  await page.mouse.move(400, 300);
+  await page.getByRole('button', { name: 'Mute movie', exact: true }).click();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.movie-controls')).opacity === '0', undefined, { timeout: 10000 });
+  assert.equal(await page.locator('.movie-topline').evaluate(e => getComputedStyle(e).opacity), '0', 'Title overlay must hide after a pointer click too.');
+  await page.mouse.move(450, 300);
+  await page.getByRole('button', { name: 'Unmute movie', exact: true }).click();
 
   await post('control', { action: 'seek', position: 600 });
   await page.waitForFunction(() => document.querySelector('.movie-video')?.currentTime >= 600, undefined, { timeout: 45000 });
