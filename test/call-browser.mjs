@@ -16,7 +16,7 @@ const owner = randomUUID();
 const internalUrl = process.env.LIVEKIT_INTERNAL_URL || 'http://127.0.0.1:7880';
 const call = new RoomServiceClient(internalUrl, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET);
 const { server, party, close } = createApp({
-  plex: { streams: new Map(), stop: async () => {}, library: async () => [] },
+  plex: { canAccess: async () => true, streams: new Map(), stop: async () => {}, library: async () => [] },
   authenticateOwner: header => cookies(header).test_owner === owner,
   livekitKey: process.env.LIVEKIT_API_KEY, livekitSecret: process.env.LIVEKIT_API_SECRET,
   livekitInternalUrl: internalUrl, origin, roomName, recordProgress: false,

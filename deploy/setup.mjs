@@ -12,15 +12,15 @@ const version = '1.13.9';
 const release = `https://github.com/livekit/livekit/releases/download/v${version}`;
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-export function writeConfiguration(directory, { publicUrl, plexUrl, token, ownerEmail, preferences = '' }) {
+export function writeConfiguration(directory, { publicUrl, plexUrl, token, preferences = '' }) {
   const data = path.join(directory, 'data');
   fs.mkdirSync(data, { recursive: true, mode: 0o700 });
   const secret = randomBytes(32).toString('hex');
   const url = new URL(publicUrl);
   const port = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ? url.port || '5175' : '5175';
   const config = { PUBLIC_URL: publicUrl, BIND_ADDRESS: '127.0.0.1', PORT: port, PLEX_URL: plexUrl,
-    PLEX_OWNER_EMAIL: ownerEmail, ...(preferences ? { PLEX_PREFERENCES: preferences } : { PLEX_TOKEN: token }),
-    AUTH_MODE: 'plex', LIVEKIT_MANAGED: 'true', LIVEKIT_API_KEY: 'playparty', LIVEKIT_API_SECRET: secret,
+    ...(preferences ? { PLEX_PREFERENCES: preferences } : token ? { PLEX_TOKEN: token } : {}),
+    AUTH_MODE: 'network', LIVEKIT_MANAGED: 'true', LIVEKIT_API_KEY: 'playparty', LIVEKIT_API_SECRET: secret,
     MOVIE_UPLOAD_MBPS: '70' };
   const yaml = `port: 7880\nbind_addresses:\n  - 127.0.0.1\nrtc:\n  tcp_port: 7881\n  udp_port: 7882\n  use_external_ip: true\nkeys:\n  playparty: ${secret}\nlogging:\n  level: warn\n`;
   fs.writeFileSync(path.join(data, 'livekit.yaml'), yaml, { mode: 0o600, flag: 'wx' });
@@ -101,22 +101,14 @@ async function setup() {
     const preferences = process.platform === 'linux' ? await ask('Preferences.xml path (leave empty to use a Plex token)', readablePreferences) : '';
     let token;
     if (!preferences) {
-      process.stdout.write('Plex owner token (hidden): '); muted = true;
+      process.stdout.write('Plex token (hidden): '); muted = true;
       token = (await rl.question('')).trim(); muted = false; process.stdout.write('\n');
     }
     const plex = new Plex({ url: plexUrl, preferences, token });
-    const [profileResponse, account] = await Promise.all([
-      fetch('https://plex.tv/api/v2/user', { headers: { Accept: 'application/json', 'X-Plex-Token': plex.token, 'X-Plex-Client-Identifier': 'playparty-setup' }, signal: AbortSignal.timeout(10000) }),
-      plex.request('/myplex/account').then(response => response.json()),
-    ]);
-    if (!profileResponse.ok) throw new Error('The Plex token could not be verified. Use the server owner’s token.');
-    const profile = await profileResponse.json();
-    const owner = String(account.MyPlex?.username || '').trim().toLowerCase();
-    if (!profile.email || !owner || ![profile.email, profile.username].some(value => String(value || '').trim().toLowerCase() === owner)) throw new Error('This account does not own the selected Plex server.');
-    await plex.json('/library/sections');
+    if (!await plex.canAccess()) throw new Error('Plex is unavailable or the token cannot access its libraries. Check the server address and token.');
     console.log(process.platform === 'darwin' ? 'Installing LiveKit with Homebrew…' : 'Installing LiveKit and checking its release checksum…');
     await installLivekit(root);
-    writeConfiguration(root, { publicUrl: url.origin, plexUrl, preferences, token: plex.token, ownerEmail: profile.email });
+    writeConfiguration(root, { publicUrl: url.origin, plexUrl, preferences, token: plex.token });
     console.log(`Ready. Run npm start, then open ${url.origin}.`);
   } finally { rl.close(); }
 }

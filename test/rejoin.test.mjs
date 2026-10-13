@@ -7,7 +7,7 @@ import { createApp } from '../server/index.mjs';
 
 test('expired memberships release cached readiness and stop their streams', async () => {
   const stopped = [];
-  const plex = { streams: new Map(), stop: async id => stopped.push(id) };
+  const plex = { canAccess: async () => true, streams: new Map(), stop: async id => stopped.push(id) };
   const { server, party, sessions, close } = createApp({ plex, authenticateOwner: async () => false, recordProgress: false });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
@@ -25,7 +25,7 @@ test('expired memberships release cached readiness and stop their streams', asyn
 });
 
 test('replacement sockets and leaving invalidate old readiness even when the room is manually paused', async () => {
-  const plex = { streams: new Map(), stop: async () => {} };
+  const plex = { canAccess: async () => true, streams: new Map(), stop: async () => {} };
   const sockets = [];
   const { server, party, close } = createApp({ plex, authenticateOwner: cookie => cookie?.includes('owner=test'),
     livekitKey: 'fixture-key', livekitSecret: 'test-only'.repeat(4), recordProgress: false });

@@ -11,15 +11,15 @@ export function cookies(header = '') {
   return result;
 }
 
-export function ownerAuthenticator(url, ownerEmail, cookieNames = ['owner_session']) {
+export function ownerAuthenticator(url, cookieNames = ['owner_session']) {
   return async (header = '') => {
     const authCookies = header.split(';').map(cookie => cookie.trim()).filter(cookie => cookieNames.includes(cookie.split('=', 1)[0])).join('; ');
-    if (!authCookies || !ownerEmail) return false;
+    if (!authCookies) return false;
     try {
       const response = await fetch(url, { headers: { Cookie: authCookies, Accept: 'application/json' }, redirect: 'manual', signal: AbortSignal.timeout(3000) });
       if (!response.ok) return false;
       const session = await response.json();
-      return session.authenticated === true && String(session.email || '').trim().toLowerCase() === ownerEmail.trim().toLowerCase();
+      return session.authenticated === true;
     } catch { return false; }
   };
 }

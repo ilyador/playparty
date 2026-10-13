@@ -6,30 +6,237 @@ import { ownerAuthenticator } from '../server/auth.mjs';
 import { Plex } from '../server/plex.mjs';
 import { WebSocket } from 'ws';
 
-test('host recognition delegates to the external owner session, preserving duplicate cookies', async () => {
+function hostFixture(overrides = {}) {
+  return { canAccess: async () => true, streams: new Map(), resources: new Map(), stop: async () => {}, library: async () => [], ...overrides };
+}
+
+async function hostApp(plex, options = {}) {
+  const app = createApp({ plex, recordProgress: false, livekitKey: 'fixture-key', livekitSecret: 'test-only'.repeat(4), ...options });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${app.server.address().port}/api/`;
+  return { ...app, request: (route, body, cookie = '') => fetch(url + route, {
+    ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+  }) };
+}
+
+test('configured Plex access enables hosting without identity checks, but only an explicit host choice grants controls', async () => {
+  const { request, close } = await hostApp(hostFixture());
+  try {
+    const session = await (await request('session')).json();
+    assert.equal(session.canHost, true);
+    assert.deepEqual(Object.keys(session).sort(), ['canHost', 'state']);
+    for (const body of [{ name: 'Guest' }, { name: 'Guest', owner: true }, { name: 'Guest', host: false }]) {
+      const joined = await request('join', body);
+      assert.equal(joined.status, 200);
+      assert.equal((await joined.json()).owner, false);
+      const cookie = joined.headers.get('set-cookie').split(';')[0];
+      assert.equal((await request('library', undefined, cookie)).status, 403);
+      assert.equal((await request('control', { action: 'play' }, cookie)).status, 403);
+    }
+    const joined = await request('join', { name: 'Host', host: true });
+    assert.equal(joined.status, 200);
+    assert.equal((await joined.json()).owner, true);
+    const cookie = joined.headers.get('set-cookie').split(';')[0];
+    assert.equal((await request('library', undefined, cookie)).status, 200);
+  } finally { await close(); }
+});
+
+test('unavailable Plex hides host eligibility and rejects host joins while guests remain able to join', async () => {
+  let probes = 0;
+  const { request, close } = await hostApp(hostFixture({ canAccess: async () => { probes++; return false; } }));
+  try {
+    assert.equal((await (await request('session')).json()).canHost, false);
+    assert.equal((await (await request('health')).json()).plex, false);
+    assert.equal(probes, 1, 'Session and health share the discovery result.');
+    assert.equal((await request('join', { name: 'Host', host: true })).status, 403);
+    assert.equal(probes, 2, 'A requested host join checks access again.');
+    const guest = await request('join', { name: 'Guest' });
+    assert.equal(guest.status, 200);
+    assert.equal((await guest.json()).owner, false);
+    assert.equal(probes, 2, 'Name-only joining does not require Plex availability.');
+  } finally { await close(); }
+});
+
+test('Plex availability is checked again after discovery and before every privileged operation', async () => {
+  let available = true;
+  let images = 0;
+  const { request, party, close } = await hostApp(hostFixture({ canAccess: async () => available,
+    image: async () => { images++; return new Response(new Uint8Array([1]), { headers: { 'Content-Type': 'image/jpeg' } }); },
+  }));
+  try {
+    assert.equal((await (await request('session')).json()).canHost, true);
+    available = false;
+    assert.equal((await request('join', { name: 'Host', host: true })).status, 403, 'A stale discovery result cannot authorize joining.');
+    assert.equal((await (await request('health')).json()).plex, false);
+    available = true;
+    const joined = await request('join', { name: 'Host', host: true });
+    const cookie = joined.headers.get('set-cookie').split(';')[0];
+    party.select({ id: 'current', duration: 120 });
+    available = false;
+    for (const [route, body] of [['library'], ['select', { id: 'other' }], ['control', { action: 'play' }], ['stop', {}]]) {
+      assert.equal((await request(route, body, cookie)).status, 403, `Lost Plex access denies ${route}.`);
+    }
+    assert.equal((await request('image/other', undefined, cookie)).status, 404);
+    assert.equal(images, 0, 'Denied artwork requests do not fetch private library images.');
+    assert.equal(party.movie.id, 'current');
+    assert.equal((await request('image/current')).status, 200, 'Guests can still see artwork for the selected movie.');
+  } finally { await close(); }
+});
+
+test('concurrent discovery and host actions share in-flight probes without reusing stale authorization', async () => {
+  let calls = 0;
+  let deferred = true;
+  let finish;
+  let arrival;
+  let remaining = 0;
+  const { request, server, close } = await hostApp(hostFixture({ canAccess: () => {
+    calls++;
+    if (!deferred) return true;
+    return new Promise(resolve => { finish = resolve; });
+  } }));
+  server.on('request', () => { if (remaining && --remaining === 0) arrival(); });
+  async function round(routes) {
+    remaining = routes.length;
+    const arrived = new Promise(resolve => { arrival = resolve; });
+    const responses = routes.map(([route, body, cookie]) => request(route, body, cookie));
+    await arrived;
+    finish(true);
+    return Promise.all(responses);
+  }
+  try {
+    const discovered = await round(Array.from({ length: 8 }, (_, index) => [index % 2 ? 'health' : 'session']));
+    assert.ok(discovered.every(response => response.status === 200));
+    assert.equal(calls, 1);
+    await request('session'); await request('health');
+    assert.equal(calls, 1, 'Sequential discovery within five seconds reuses the result.');
+    deferred = false;
+    const joined = await request('join', { name: 'Host', host: true });
+    const cookie = joined.headers.get('set-cookie').split(';')[0];
+    assert.equal(calls, 2, 'Joining as host performs a fresh check.');
+    deferred = true;
+    const libraries = await round(Array.from({ length: 6 }, () => ['library', undefined, cookie]));
+    assert.ok(libraries.every(response => response.status === 200));
+    assert.equal(calls, 3, 'Concurrent host actions coalesce into a new access check.');
+  } finally { finish?.(false); await close(); }
+});
+
+test('discovery expires after five seconds so a changed Plex server removes host eligibility', async t => {
+  const originalNow = Date.now;
+  const baseline = originalNow();
+  let clock = baseline;
+  let probes = 0;
+  let available = true;
+  t.mock.method(Date, 'now', () => clock);
+  const { request, close } = await hostApp(hostFixture({ canAccess: async () => { probes++; return available; } }));
+  try {
+    assert.equal((await (await request('session')).json()).canHost, true);
+    available = false;
+    clock = baseline + 4999;
+    assert.equal((await (await request('session')).json()).canHost, true);
+    assert.equal(probes, 1);
+    clock = baseline + 5000;
+    assert.equal((await (await request('session')).json()).canHost, false);
+    assert.equal(probes, 2);
+  } finally { await close(); }
+});
+
+test('a departed member cannot complete a delayed Plex host check', async () => {
+  let available = () => true;
+  let began;
+  let finish;
+  let libraries = 0;
+  const { request, close } = await hostApp(hostFixture({ canAccess: async () => available(), library: async () => { libraries++; return []; } }));
+  try {
+    const joined = await request('join', { name: 'Host', host: true });
+    const cookie = joined.headers.get('set-cookie').split(';')[0];
+    const probing = new Promise(resolve => { began = resolve; });
+    available = () => { began(); return new Promise(resolve => { finish = resolve; }); };
+    const library = request('library', undefined, cookie);
+    await probing;
+    assert.equal((await request('leave', {}, cookie)).status, 200);
+    finish(true);
+    assert.equal((await library).status, 403);
+    assert.equal(libraries, 0, 'The removed member is checked again before accessing the library.');
+  } finally { finish?.(false); await close(); }
+});
+
+test('a retired host cannot apply a movie selection whose Plex metadata arrives later', async t => {
+  for (const retirement of ['leave', 'replacement']) {
+    await t.test(retirement, async () => {
+      let began;
+      let finish;
+      const metadataPending = new Promise(resolve => { began = resolve; });
+      const { request, party, close } = await hostApp(hostFixture({
+        metadata: async () => { began(); return new Promise(resolve => { finish = resolve; }); },
+        simplify: item => item,
+      }));
+      try {
+        const joined = await request('join', { name: 'First host', host: true });
+        const cookie = joined.headers.get('set-cookie').split(';')[0];
+        party.select({ id: 'original', duration: 120 });
+        const selected = request('select', { id: 'late' }, cookie);
+        await metadataPending;
+        const retired = retirement === 'leave' ? await request('leave', {}, cookie) : await request('join', { name: 'New host', host: true });
+        assert.equal(retired.status, 200);
+        finish({ id: 'late', type: 'movie', duration: 120 });
+        assert.equal((await selected).status, 401);
+        assert.equal(party.movie.id, 'original', 'Late metadata cannot change playback after its host loses the session.');
+      } finally { finish?.({ id: 'late', type: 'movie', duration: 120 }); await close(); }
+    });
+  }
+});
+
+test('external provider remains a separate authenticated gate and its revocation immediately removes host access', async () => {
+  let authenticated = true;
+  const provider = http.createServer((req, res) => {
+    const valid = authenticated && req.headers.cookie === 'fixture_session=valid';
+    res.writeHead(valid ? 200 : 401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ authenticated: valid }));
+  });
+  await new Promise(resolve => provider.listen(0, '127.0.0.1', resolve));
+  const { request, close } = await hostApp(hostFixture(), { authenticateOwner: ownerAuthenticator(`http://127.0.0.1:${provider.address().port}/session`, ['fixture_session']) });
+  try {
+    assert.equal((await (await request('session')).json()).canHost, false);
+    assert.equal((await request('join', { name: 'Host', host: true })).status, 403);
+    assert.equal((await (await request('session', undefined, 'fixture_session=valid')).json()).canHost, true);
+    const joined = await request('join', { name: 'Host', host: true }, 'fixture_session=valid');
+    assert.equal(joined.status, 200, 'A valid provider session can host without any email.');
+    const cookie = joined.headers.get('set-cookie').split(';')[0] + '; fixture_session=valid';
+    assert.equal((await request('library', undefined, cookie)).status, 200);
+    authenticated = false;
+    assert.equal((await (await request('session', undefined, cookie)).json()).canHost, false);
+    assert.equal((await request('library', undefined, cookie)).status, 403);
+    assert.equal((await request('control', { action: 'play' }, cookie)).status, 403);
+  } finally { await close(); provider.closeAllConnections(); await new Promise(resolve => provider.close(resolve)); }
+});
+
+test('host recognition delegates to an authenticated external session without matching email, preserving duplicate cookies', async () => {
   let receivedCookie;
+  let email = 'unrelated@example.com';
   const server = http.createServer((req, res) => {
     receivedCookie = req.headers.cookie;
     const valid = receivedCookie?.includes('owner_session=current');
     res.writeHead(valid ? 200 : 401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(valid ? { authenticated: true, email: 'owner@example.com' } : { authenticated: false }));
+    res.end(JSON.stringify(valid ? { authenticated: true, ...(email ? { email } : {}) } : { authenticated: false }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}/api/auth/session`;
   try {
-    const valid = ownerAuthenticator(url, 'owner@example.com');
+    const valid = ownerAuthenticator(url);
     assert.equal(await valid('owner_session=current; playparty_session=private'), true);
     assert.equal(receivedCookie, 'owner_session=current');
     assert.equal(await valid('owner_session=stale; owner_session=current'), true);
     assert.equal(receivedCookie, 'owner_session=stale; owner_session=current');
     assert.equal(await valid('owner_session=forged'), false);
-    assert.equal(await ownerAuthenticator(url, 'other@example.com')('owner_session=current'), false);
+    email = undefined;
+    assert.equal(await valid('owner_session=current'), true, 'A provider need not return any email.');
     assert.equal(await valid(''), false);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
 test('name-only guests cannot forge host status, browse the library, or control playback', async () => {
-  const plex = { ownerName: 'Owner', streams: new Map(), resources: new Map(), stop: async () => {}, library: async () => [{ id: '1' }], token: 'test' };
+  const plex = { canAccess: async () => true, ownerName: 'Owner', streams: new Map(), resources: new Map(), stop: async () => {}, library: async () => [{ id: '1' }], token: 'test' };
   const { server, party } = createApp({ plex, authenticateOwner: async header => header?.includes('owner=test'), livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', origin: 'http://localhost:5175' });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}/api/`;
@@ -70,7 +277,7 @@ test('name-only guests cannot forge host status, browse the library, or control 
 });
 
 test('public guest identities cannot be used as participant session cookies', async () => {
-  const plex = { streams: new Map(), resources: new Map(), stop: async () => {} };
+  const plex = { canAccess: async () => true, streams: new Map(), resources: new Map(), stop: async () => {} };
   const { server, party, close } = createApp({ plex, authenticateOwner: async () => false,
     livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', recordProgress: false });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -93,7 +300,7 @@ test('public guest identities cannot be used as participant session cookies', as
 });
 
 test('an owner switching browsers retires the old participant session', async () => {
-  const plex = { streams: new Map(), stop: async () => {}, library: async () => [] };
+  const plex = { canAccess: async () => true, streams: new Map(), stop: async () => {}, library: async () => [] };
   const { server, sessions, party, close } = createApp({ plex, authenticateOwner: cookie => cookie?.includes('owner=test'),
     livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', recordProgress: false });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -135,7 +342,7 @@ test('an owner switching browsers retires the old participant session', async ()
 });
 
 test('same-cookie rejoins and duplicate state sockets explicitly supersede the old tab', async () => {
-  const plex = { streams: new Map(), stop: async () => {} };
+  const plex = { canAccess: async () => true, streams: new Map(), stop: async () => {} };
   const { server, party, close } = createApp({ plex, authenticateOwner: async () => false,
     livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', recordProgress: false });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -165,7 +372,7 @@ test('same-cookie rejoins and duplicate state sockets explicitly supersede the o
 });
 
 test('expired party sockets terminate explicitly and invalid sessions receive no party data', async () => {
-  const plex = { streams: new Map(), stop: async () => {} };
+  const plex = { canAccess: async () => true, streams: new Map(), stop: async () => {} };
   const { server, sessions, party, close } = createApp({ plex, authenticateOwner: async () => false,
     livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', livekitInternalUrl: 'http://127.0.0.1:1', recordProgress: false });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -213,7 +420,7 @@ test('leaving cancels waiting and in-flight streams before a returning participa
   let announceStart;
   const oldStarted = new Promise(resolve => { announceStart = resolve; });
   let starts = 0;
-  const plex = { streams: new Map(), stop: async id => { plex.streams.delete(id); }, start: async (id, movie) => {
+  const plex = { canAccess: async () => true, streams: new Map(), stop: async id => { plex.streams.delete(id); }, start: async (id, movie) => {
     const number = ++starts;
     if (number === 1) { announceStart(); await new Promise(resolve => { finishOld = resolve; }); }
     plex.streams.set(id, { id: `stream-${number}`, version: movie.version });
@@ -261,7 +468,7 @@ test('shutdown drains a pending stream and invalidates deferred joins and select
   const selecting = new Promise(resolve => { announceMetadata = resolve; });
   const authenticating = new Promise(resolve => { announceAuth = resolve; });
   const progress = [];
-  const plex = { streams: new Map(), stop: async id => { plex.streams.delete(id); },
+  const plex = { canAccess: async () => true, streams: new Map(), stop: async id => { plex.streams.delete(id); },
     metadata: async () => { announceMetadata(); return new Promise(resolve => { finishMetadata = resolve; }); },
     simplify: item => item,
     start: async (id, movie) => { announceStart(); await new Promise(resolve => { finishStart = resolve; }); plex.streams.set(id, { id: 'pending-stream', version: movie.version }); return { url: '/api/stream/pending-stream' }; },
@@ -280,7 +487,7 @@ test('shutdown drains a pending stream and invalidates deferred joins and select
     party.select({ id: '1', duration: 120, resumePosition: 23 });
     const playback = request('playback', cookie, {});
     const selection = request('select', cookie, { id: '2' });
-    const lateJoin = request('join', 'owner=deferred', { name: 'Late guest', host: false });
+    const lateJoin = request('join', 'owner=deferred', { name: 'Late host', host: true });
     await Promise.all([started, selecting, authenticating]);
     let closed = false;
     const shutdown = close().then(() => { closed = true; });
@@ -304,7 +511,7 @@ test('shutdown drains a pending stream and invalidates deferred joins and select
 test('stop cancels an in-flight selection and invalidates an in-flight stream', async () => {
   let finishMetadata, finishPlayback;
   const stopped = [];
-  const plex = {
+  const plex = { canAccess: async () => true,
     streams: new Map(), token: 'test', ownerName: 'Owner',
     metadata: () => new Promise(resolve => { finishMetadata = resolve; }),
     simplify: item => item,
@@ -394,7 +601,7 @@ test('Plex playlists hide credentials, reject other origins, and reuse resource 
 
 test('host controls save ordered progress to Plex before Stop returns', async () => {
   const updates = [];
-  const plex = { token: 'test', streams: new Map(), stop: async () => {},
+  const plex = { canAccess: async () => true, token: 'test', streams: new Map(), stop: async () => {},
     metadata: async id => ({ id, type: 'episode', duration: 1200, resumePosition: 87 }),
     simplify: item => item,
     timeline: async (movie, position, state, session) => { updates.push({ id: movie.id, position, state, session }); },
@@ -428,7 +635,7 @@ test('host controls save ordered progress to Plex before Stop returns', async ()
 
 test('recovery diagnostics survive nearby samples while duplicate and burst logging stays bounded', async () => {
   const logged = [];
-  const plex = { streams: new Map(), resources: new Map(), stop: async () => {} };
+  const plex = { canAccess: async () => true, streams: new Map(), resources: new Map(), stop: async () => {} };
   const { server, close } = createApp({ plex, authenticateOwner: async () => false,
     livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', recordProgress: false, logPlayback: sample => logged.push(sample) });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

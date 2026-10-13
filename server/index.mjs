@@ -15,7 +15,6 @@ import { Party } from './party.mjs';
 import { Plex } from './plex.mjs';
 import { MovieBudget } from './bandwidth.mjs';
 import { cookies, ownerAuthenticator, sessionId } from './auth.mjs';
-import { authIdentity, PlexOwnerLogin } from './plex-auth.mjs';
 import { playbackLogger, playbackMetrics } from './playback-log.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -33,7 +32,7 @@ const localNetwork = ip => {
   return ip === '::1' || /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || (ip.includes(':') && localIPv6.includes(ipv6Prefix(ip)));
 };
 
-export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, livekitSecret, livekitUrl, livekitInternalUrl = 'http://127.0.0.1:7880', origin, loginUrl = '/api/auth/login', loginLabel = 'Sign in with Plex', movieMbps = 70, roomName = 'playparty', recordProgress = true, logPlayback = () => {}, assetsRoot = path.join(root, 'dist') } = {}) {
+export function createApp({ plex, authenticateOwner = async () => true, livekitKey, livekitSecret, livekitUrl, livekitInternalUrl = 'http://127.0.0.1:7880', origin, movieMbps = 70, roomName = 'playparty', recordProgress = true, logPlayback = () => {}, assetsRoot = path.join(root, 'dist') } = {}) {
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
@@ -57,6 +56,28 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
   let progressQueue = Promise.resolve();
   let progressSession = randomUUID();
   let lastProgressAt = 0;
+  let plexProbe;
+  let plexAvailable = false;
+  let plexCheckedAt = 0;
+
+  function plexAccess(fresh = false) {
+    if (plexProbe) return plexProbe;
+    if (!fresh && plexCheckedAt && Date.now() - plexCheckedAt < 5000) return Promise.resolve(plexAvailable);
+    plexProbe = Promise.resolve().then(() => plex.canAccess()).then(available => {
+      plexAvailable = available === true;
+      plexCheckedAt = Date.now();
+      return plexAvailable;
+    }).catch(() => {
+      plexAvailable = false;
+      plexCheckedAt = Date.now();
+      return false;
+    }).finally(() => { plexProbe = undefined; });
+    return plexProbe;
+  }
+
+  async function canHost(req, fresh = false) {
+    return await plexAccess(fresh) && Boolean(await authenticateOwner(req.headers.cookie));
+  }
 
   function saveProgress(state = party.paused ? 'paused' : 'playing') {
     if (!recordProgress || !party.movie || !plex.timeline) return Promise.resolve();
@@ -95,7 +116,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     next();
   }
   async function requireHost(req, res, next) {
-    if (!req.member?.owner || !await authenticateOwner(req.headers.cookie) || !currentMember(req.member)) return res.status(403).json({ error: 'Only the Plex owner can choose what plays.' });
+    if (!req.member?.owner || !await canHost(req, true) || !currentMember(req.member)) return res.status(403).json({ error: 'Only a host with Plex access can choose what plays.' });
     next();
   }
   function broadcast() {
@@ -111,18 +132,15 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
   }
 
   app.get('/api/health', async (req, res) => {
-    const plexReady = Boolean(plex?.token);
+    const plexReady = await plexAccess();
     let callReady = false;
     try { if (call) { await call.listRooms([roomName]); callReady = true; } } catch {}
     res.json({ plex: plexReady, call: callReady });
   });
   app.get('/api/session', async (req, res) => {
-    res.json({ owner: Boolean(await authenticateOwner(req.headers.cookie)), loginUrl, loginLabel, plexLogin: Boolean(plexLogin), state: party.snapshot() });
+    const eligible = await canHost(req);
+    res.json({ canHost: eligible, state: party.snapshot() });
   });
-  if (plexLogin) {
-    app.get('/api/auth/login', (req, res) => plexLogin.begin(req, res));
-    app.post('/api/auth/complete', (req, res) => plexLogin.complete(req, res));
-  }
   app.use((req, res, next) => {
     if (!req.url.startsWith('/livekit/')) return next();
     req.url = req.url.slice('/livekit'.length);
@@ -130,12 +148,11 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     proxy.web(req, res);
   });
   app.post('/api/join', async (req, res) => {
-    const authenticatedOwner = Boolean(await authenticateOwner(req.headers.cookie));
+    const owner = req.body?.host === true && await canHost(req, true);
     if (closing) return res.status(503).json({ error: 'Playparty is restarting. Try again shortly.' });
-    if (req.body?.host === true && !authenticatedOwner) {
-      return res.status(403).json({ error: 'Sign in as the Plex owner, then try again.' });
+    if (req.body?.host === true && !owner) {
+      return res.status(403).json({ error: 'An accessible Plex server is required to host.' });
     }
-    const owner = authenticatedOwner && req.body?.host !== false;
     const sid = sessionId(req, res, req.secure);
     const previous = sessions.get(sid);
     const guestIdentity = createHmac('sha256', sessionIdentityKey).update(sid).digest('base64url');
@@ -186,8 +203,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     res.json({ items, continueWatching });
   });
   app.get('/api/image/:id', async (req, res) => {
-    const owner = await authenticateOwner(req.headers.cookie);
-    if (!owner && String(req.params.id) !== party.movie?.id) return res.sendStatus(404);
+    if (String(req.params.id) !== party.movie?.id && !await canHost(req, true)) return res.sendStatus(404);
     const upstream = await plex.image(String(req.params.id), req.query.kind === 'art' ? 'art' : 'thumb');
     res.setHeader('Cache-Control', 'private, max-age=3600');
     res.type(upstream.headers.get('content-type') || 'image/jpeg');
@@ -196,6 +212,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
   app.post('/api/select', requireMember, requireHost, async (req, res) => {
     const revision = ++selectionRevision;
     const item = await plex.metadata(String(req.body?.id || ''));
+    if (!currentMember(req.member) || participant(req) !== req.member) return res.status(401).json({ error: 'Enter your name to join.' });
     if (revision !== selectionRevision) return res.status(409).json({ error: 'The selection changed. Choose again.' });
     if (!['movie', 'episode'].includes(item.type)) return res.status(400).json({ error: 'Choose a movie or an episode.' });
     const progress = saveProgress('stopped');
@@ -410,22 +427,20 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const plex = new Plex({ url: process.env.PLEX_URL, preferences: process.env.PLEX_PREFERENCES, token: process.env.PLEX_TOKEN, ownerEmail: process.env.PLEX_OWNER_EMAIL });
+  const plex = new Plex({ url: process.env.PLEX_URL, preferences: process.env.PLEX_PREFERENCES, token: process.env.PLEX_TOKEN });
   const origin = process.env.PUBLIC_URL || 'http://localhost:5175';
-  const authMode = process.env.AUTH_MODE || 'plex';
-  if (!['plex', 'external'].includes(authMode)) throw new Error('AUTH_MODE must be plex or external.');
-  if (authMode === 'external' && (!process.env.AUTH_URL || !process.env.AUTH_COOKIE_NAMES || !plex.ownerEmail)) {
-    throw new Error('External authentication requires AUTH_URL, AUTH_COOKIE_NAMES and the Plex owner email.');
+  const authMode = process.env.AUTH_MODE || 'network';
+  if (!['network', 'plex', 'external'].includes(authMode)) throw new Error('AUTH_MODE must be network or external.');
+  if (authMode === 'external' && (!process.env.AUTH_URL || !process.env.AUTH_COOKIE_NAMES)) {
+    throw new Error('External authentication requires AUTH_URL and AUTH_COOKIE_NAMES.');
   }
-  const plexLogin = authMode === 'plex' ? new PlexOwnerLogin({ ownerEmail: plex.ownerEmail, origin,
-    identity: authIdentity(path.join(root, 'data', 'owner-auth.json')) }) : null;
-  const authenticateOwner = plexLogin?.authenticate || ownerAuthenticator(process.env.AUTH_URL, plex.ownerEmail, process.env.AUTH_COOKIE_NAMES.split(',').map(name => name.trim()));
+  const authenticateOwner = authMode === 'external' ? ownerAuthenticator(process.env.AUTH_URL, process.env.AUTH_COOKIE_NAMES.split(',').map(name => name.trim())) : undefined;
   let livekit;
   if (process.env.LIVEKIT_MANAGED === 'true') {
     livekit = spawn(path.join(root, 'bin', 'livekit-server'), ['--config', path.join(root, 'data', 'livekit.yaml')], { stdio: 'inherit' });
   }
   const { server, close } = createApp({
-    plex, authenticateOwner, plexLogin, origin, loginUrl: process.env.AUTH_LOGIN_URL, loginLabel: process.env.AUTH_LOGIN_LABEL,
+    plex, authenticateOwner, origin,
     livekitKey: process.env.LIVEKIT_API_KEY, livekitSecret: process.env.LIVEKIT_API_SECRET,
     livekitUrl: process.env.LIVEKIT_PUBLIC_URL || `${origin.replace(/^http/, 'ws')}/livekit`, livekitInternalUrl: process.env.LIVEKIT_INTERNAL_URL,
     movieMbps: Number(process.env.MOVIE_UPLOAD_MBPS || 70),

@@ -6,19 +6,17 @@ const xml = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '', pa
 const array = value => value == null ? [] : Array.isArray(value) ? value : [value];
 
 export class Plex {
-  constructor({ url = 'http://127.0.0.1:32400', preferences, token, ownerEmail } = {}) {
+  constructor({ url = 'http://127.0.0.1:32400', preferences, token } = {}) {
     this.url = new URL(url);
     const prefs = preferences && fs.existsSync(preferences) ? xml.parse(fs.readFileSync(preferences, 'utf8')).Preferences : {};
     this.token = token || prefs?.PlexOnlineToken;
-    this.ownerEmail = (ownerEmail || prefs?.PlexOnlineMail)?.trim().toLowerCase();
     this.resources = new Map();
     this.streams = new Map();
-    if (!this.token) throw new Error('Plex credentials are unavailable. Set PLEX_PREFERENCES or PLEX_TOKEN.');
   }
 
   headers(identity = 'playparty') {
     return {
-      'X-Plex-Token': this.token,
+      ...(this.token ? { 'X-Plex-Token': this.token } : {}),
       'X-Plex-Client-Identifier': identity,
       'X-Plex-Product': 'Playparty',
       'X-Plex-Version': '0.1.0',
@@ -40,6 +38,14 @@ export class Plex {
 
   async json(path, identity, options) {
     return (await (await this.request(path, identity, options)).json()).MediaContainer || {};
+  }
+
+  async canAccess() {
+    try {
+      const response = await this.request('/library/sections', undefined, { signal: AbortSignal.timeout(3000) });
+      const container = (await response.json())?.MediaContainer;
+      return Boolean(container && typeof container === 'object' && !Array.isArray(container));
+    } catch { return false; }
   }
 
   simplify(item) {

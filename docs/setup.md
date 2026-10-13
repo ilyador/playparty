@@ -4,11 +4,13 @@
 
 ## Plex credentials
 
-Use the token of the account that owns your Plex Media Server. In Plex Web, sign in as that owner, open a library item, and choose **Get Info → View XML**. Copy the `X-Plex-Token` value from the XML page's address and paste it into setup's hidden token prompt. See [Plex's token instructions](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/) for screenshots and details. Treat the token as a password.
+Use a token that can access the configured Plex server's libraries. In Plex Web, open a library item and choose **Get Info → View XML**. Copy the `X-Plex-Token` value from the XML page's address and paste it into setup's hidden token prompt. See [Plex's token instructions](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/) for screenshots and details. Treat the token as a password.
 
-On Linux, setup offers the standard Plex `Preferences.xml` location when it is readable. You can use another readable XML path or leave the path empty to enter the owner token. macOS setup uses the token prompt; Plex's macOS preferences are a property list rather than this Linux XML file.
+On Linux, setup offers the standard Plex `Preferences.xml` location when it is readable. You can use another readable XML path or leave the path empty to enter a token. macOS setup uses the token prompt; Plex's macOS preferences are a property list rather than this Linux XML file.
 
-Setup checks the token with Plex, verifies ownership of the selected server, and checks library access before writing configuration. Credentials stay on the server. The `.env` and `data/livekit.yaml` files are private and setup refuses to replace existing configuration.
+Setup verifies library access directly with the selected Plex server before writing configuration. Credentials stay on the server. The `.env` and `data/livekit.yaml` files are private and setup refuses to replace existing configuration.
+
+When the page loads, Playparty checks its configured server from the machine running the app. Use `PLEX_URL` for Plex on that machine or its network. This checks one known server; it does not scan a visitor's network. **I am the host** stays hidden until access is verified and disappears when the server is unavailable. Turn it on explicitly to host; leaving it off joins as a guest. There is no browser Plex sign-in or email match.
 
 ## LiveKit installation
 
@@ -33,7 +35,7 @@ Edit `.env` and restart Playparty after changing settings.
 | `PUBLIC_URL` | Address people open. |
 | `PLEX_URL` | Plex server address reachable from Playparty. |
 | `PLEX_PREFERENCES` or `PLEX_TOKEN` | Server-side Plex credentials. |
-| `PLEX_OWNER_EMAIL` | Account allowed to host, detected by setup. |
+| `AUTH_MODE` | `network` checks configured Plex access; `external` also requires an authenticated session. |
 | `MOVIE_UPLOAD_MBPS` | Shared remote movie upload budget, default 70 Mbps. Set it below your upload speed to leave room for the call. Local viewers do not count against it. |
 | `LIVEKIT_MANAGED` | Start the bundled call server with Playparty; set to `false` when running it separately. |
 
@@ -43,15 +45,15 @@ Playparty adjusts remote streams per viewer. Sustained slow downloads or bufferi
 
 ## Existing authentication provider
 
-The default is Plex owner sign-in. To require an existing login provider, set `AUTH_MODE=external`, `AUTH_URL`, `AUTH_COOKIE_NAMES` (comma-separated cookie names), and `AUTH_LOGIN_URL` in `.env`. `AUTH_LOGIN_LABEL` customizes the login link.
+The default `AUTH_MODE=network` lets anyone opening the app choose to host while the configured Plex server is accessible. To restrict host and library access through an existing login provider, set `AUTH_MODE=external`, `AUTH_URL`, and `AUTH_COOKIE_NAMES` (comma-separated cookie names) in `.env`. Sign in through that provider before opening Playparty; the app does not add a separate login flow. Guests still enter only their name.
 
 The server-side validation endpoint receives only the selected cookies and must return:
 
 ```json
-{"authenticated": true, "email": "owner@example.com"}
+{"authenticated": true}
 ```
 
-Return HTTP 401 for expired or invalid sessions and use `Cache-Control: no-store`. The email must match `PLEX_OWNER_EMAIL`. The login provider and Playparty must share the relevant cookie's domain scope. Playparty checks the provider again before library access and shared controls. External mode disables Plex sign-in; provider failures never grant host access.
+Return HTTP 401 for expired or invalid sessions and use `Cache-Control: no-store`. Email and account-name claims are ignored. The login provider and Playparty must share the relevant cookie's domain scope. Playparty checks the provider again before library access and shared controls, alongside Plex availability. The host switch stays hidden without an authenticated session; provider failures never grant host access.
 
 ## Linux user services
 
@@ -111,7 +113,7 @@ npm run build
 npm run test:browser
 ```
 
-The browser check needs local Plex, LiveKit, and Chrome (`TEST_CHROME` overrides the browser path; `TEST_MOVIE` selects a library title). It uses an isolated party, fake camera/microphone devices, and a test-only owner authenticator. It checks real movie/call playback, fullscreen, subtitles, episode labels, Stop, blocked autoplay, and synchronized recovery from a twelve-second transcode delay. `TEST_REMOTE=1` also checks adaptive quality under throttling. Run `node --disable-warning=ExperimentalWarning test/rejoin-browser.mjs` for refresh/rejoin and stuck-seek recovery, or `node --disable-warning=ExperimentalWarning test/call-browser.mjs` for multi-client calls and device controls. Content-dependent checks are skipped when suitable media is unavailable. `TEST_CAPTURE=1` writes ignored review captures; delete them after review.
+The browser check needs local Plex, LiveKit, and Chrome (`TEST_CHROME` overrides the browser path; `TEST_MOVIE` selects a library title). It uses an isolated party, fake camera/microphone devices, and a test-only host authenticator. It checks real movie/call playback, fullscreen, subtitles, episode labels, Stop, blocked autoplay, and synchronized recovery from a twelve-second transcode delay. `TEST_REMOTE=1` also checks adaptive quality under throttling. Run `node --disable-warning=ExperimentalWarning test/rejoin-browser.mjs` for refresh/rejoin and stuck-seek recovery, or `node --disable-warning=ExperimentalWarning test/call-browser.mjs` for multi-client calls and device controls. Content-dependent checks are skipped when suitable media is unavailable. `TEST_CAPTURE=1` writes ignored review captures; delete them after review.
 
 Private configuration, authentication keys, binaries, dependencies, builds, and local captures are excluded from Git. No media files, library history, or real account details are included in this repository.
 

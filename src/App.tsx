@@ -12,12 +12,7 @@ import { api, contentTitle, post, type Joined, type PartyState } from './types';
 export default function App() {
   const [name, setName] = useState(() => localStorage.getItem('playparty-name') || '');
   const [host, setHost] = useState(false);
-  const [loginUrl, setLoginUrl] = useState('/login');
-  const [loginLabel, setLoginLabel] = useState('Sign in to host');
-  const [plexLogin, setPlexLogin] = useState(false);
-  const [recognizedOwner, setRecognizedOwner] = useState(false);
-  const hostTouched = useRef(false);
-  const loginInProgress = useRef(new URLSearchParams(location.search).has('plex-login'));
+  const [canHost, setCanHost] = useState(false);
   const [joined, setJoined] = useState<Joined | null>(null);
   const [state, setState] = useState<PartyState | null>(null);
   const [joining, setJoining] = useState(false);
@@ -43,25 +38,22 @@ export default function App() {
   const movieElement = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
-    if (!new URLSearchParams(location.search).has('plex-login')) return;
-    history.replaceState(null, '', location.pathname);
-    hostTouched.current = true; setHost(true); setJoining(true);
-    post('auth/complete', {}).then(() => {
-      setRecognizedOwner(true); setNotice('Signed in. You can join as the host.');
-    }).catch(error => setError(error.message)).finally(() => {
-      loginInProgress.current = false; setJoining(false); window.dispatchEvent(new Event('focus'));
-    });
-  }, []);
-
-  useEffect(() => {
     if (joined) return;
     const abort = new AbortController();
+    let refreshing = false;
     const refresh = () => {
-      if (loginInProgress.current) return;
-      return api<{ state: PartyState; owner: boolean; loginUrl: string; loginLabel: string; plexLogin: boolean }>('session', { signal: abort.signal }).then(data => {
-      setState(data.state); setLoginUrl(data.loginUrl); setLoginLabel(data.loginLabel); setPlexLogin(data.plexLogin); setRecognizedOwner(data.owner);
-      if (!hostTouched.current) setHost(data.owner);
-      }).catch(() => { if (!abort.signal.aborted) setError('Playparty is unavailable. Try again in a moment.'); });
+      if (refreshing) return;
+      refreshing = true;
+      return api<{ state: PartyState; canHost: boolean }>('session', { signal: abort.signal }).then(data => {
+        if (abort.signal.aborted) return;
+        setState(data.state); setCanHost(data.canHost === true);
+        if (!data.canHost) setHost(false);
+      }).catch(() => {
+        if (!abort.signal.aborted) {
+          setCanHost(false); setHost(false);
+          setError('Playparty is unavailable. Try again in a moment.');
+        }
+      }).finally(() => { refreshing = false; });
     };
     refresh();
     const timer = setInterval(refresh, 5000);
@@ -250,16 +242,12 @@ export default function App() {
 
   async function join(event: React.FormEvent) {
     event.preventDefault(); if (!name.trim()) return;
-    if (host && plexLogin && !recognizedOwner) {
-      localStorage.setItem('playparty-name', name.trim());
-      location.assign(loginUrl); return;
-    }
     // Keep the actual player element created and authorized by this Join tap.
     // Safari grants playback to an element, rather than to the React page.
     movieElement.current = createMovieElement(movieElement.current || undefined);
     setJoining(true); setError('');
     try {
-      const data = await post<Joined>('join', { name: name.trim(), host });
+      const data = await post<Joined>('join', { name: name.trim(), host: canHost && host });
       localStorage.setItem('playparty-name', data.name);
       setState(data.state); setJoined(data);
     } catch (error) { setError((error as Error).message); }
@@ -327,10 +315,9 @@ export default function App() {
           <h1>Join the party.</h1>
           <label className="name-label" htmlFor="name">Your name</label>
           <input id="name" className="name-input" autoComplete="given-name" autoFocus placeholder="What should we call you?" maxLength={40} value={name} onChange={event => setName(event.target.value)} required />
-          <label className="host-choice" htmlFor="host"><span>I am the host</span><span className="host-switch"><input id="host" type="checkbox" role="switch" checked={host} disabled={joining} onChange={event => { hostTouched.current = true; setHost(event.target.checked); setError(''); }} /><span className="host-switch-track" aria-hidden="true" /></span></label>
+          {canHost && <label className="host-choice" htmlFor="host"><span>I am the host</span><span className="host-switch"><input id="host" type="checkbox" role="switch" checked={host} disabled={joining} onChange={event => { setHost(event.target.checked); setError(''); }} /><span className="host-switch-track" aria-hidden="true" /></span></label>}
           <button className="join-button" disabled={joining || !name.trim()}>{joining ? <><SpinnerGap className="spinner" size={20} />Joining…</> : <>Join<ArrowRight size={21} /></>}</button>
           {error && <p className="inline-error" role="alert">{error}</p>}
-          {host && error && <a className="host-login-link" href={loginUrl} target={plexLogin ? undefined : '_blank'} rel="noreferrer">{loginLabel}</a>}
           <p className="join-caption">{state?.hostPresent ? 'Your people are already here.' : 'Come on in. Make yourself comfortable.'}</p>
         </form>
         {state?.movie && <div className="joining-movie"><img src={`/api/image/${state.movie.id}?kind=art`} alt="" /><div>{state.movie.seriesTitle ? <><strong className="series-name">{state.movie.seriesTitle}</strong><span className="episode-name">{state.movie.title}</span></> : <><span>Watching together</span><strong>{state.movie.title}</strong></>}<span className="episode-details">{state.movie.episodeDetails || state.movie.year}</span></div></div>}

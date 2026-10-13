@@ -50,7 +50,6 @@ input::placeholder { color: #9298a1; opacity: 1; }
 .host-switch input:checked + .host-switch-track::after { transform: translateX(18px); }
 .host-switch input:focus-visible + .host-switch-track { outline: 2px solid #eeefec; outline-offset: 4px; }
 .host-switch input:disabled + .host-switch-track { opacity: .45; }
-.host-login-link { color: #d8ddd5; font-size: 13px; text-underline-offset: 3px; }
 .join-button { display: flex; align-items: center; justify-content: space-between; width: 100%; height: 52px; margin-top: 14px; padding: 0 17px; background: #e9eae5; color: #16181a; border-radius: 10px; font-weight: 550; font-size: 15px; }
 .join-caption { margin: 25px 0 0; font-size: 13px; line-height: 1.6; color: var(--muted); }
 .joining-movie { aspect-ratio: 16/10; position: relative; overflow: hidden; border-radius: 12px; background: var(--surface); }

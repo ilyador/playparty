@@ -97,7 +97,7 @@ The shipped interface uses one type family, restrained rounded rectangles, real 
 
 The app icon pairs two chalk and muted-sage companion forms around a shared play-shaped opening on opaque graphite. Its simple, centered silhouette carries the room's identity onto the Home Screen and browser tab.
 
-The name form includes an “I am the host” switch below the name field. Its full label row is at least 44px high, with a 44×26px track and a 20px soft-white thumb. Off uses field-border gray; on uses the room’s quiet green. Keyboard focus outlines the track, and changes take 160ms. The switch defaults on for a recognized owner login. The standalone host flow signs in through Plex; a configured external provider can supply the same host entry action. The switch selects the role rather than granting permission.
+The name form includes an “I am the host” switch below the name field only when the machine running Playparty can access its configured Plex library. Its full label row is at least 44px high, with a 44×26px track and a 20px soft-white thumb. Off uses field-border gray; on uses the room’s quiet green. Keyboard focus outlines the track, and changes take 160ms. The switch starts off and stays completely hidden until access is verified, including when Plex is offline. Standalone hosting requires no browser Plex sign-in or email check. A configured external provider also requires an authenticated session. The switch selects the role rather than granting permission.
 
 **Key Characteristics:**
 - Graphite surfaces with soft off-white text.
@@ -189,7 +189,7 @@ Library search is a compact bordered field with a Phosphor magnifier. Its focus 
 
 The picker is a native modal dialog populated by real Plex posters and metadata. Filter buttons use a quiet filled selected state. Poster titles clamp to two lines; supporting year and duration remain muted. Hover and keyboard focus reveal the poster's action overlay. Shows and seasons lead deeper into the same picker; episodes become compact divided rows.
 
-The dialog closes through its close control, Escape, or backdrop. The owner's footer picker button carries an explicit accessible name even when its text is hidden on mobile.
+The dialog closes through its close control, Escape, or backdrop. The host's footer picker button carries an explicit accessible name even when its text is hidden on mobile.
 
 ### Camera Tiles
 

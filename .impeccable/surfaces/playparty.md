@@ -3,7 +3,7 @@
 Primary target: src/App.tsx
 Related targets: src/Library.tsx, src/Player.tsx, src/Call.tsx, src/style.css
 Mode: Operate
-Scope: Name-only arrival, the shared call, owner content picker, shared player.
+Scope: Name-only arrival, the shared call, host content picker, shared player.
 Execution: code-led. The user pinned a minimal dark call interface and approved a simplified Plex library picker; this existing approval controls the build.
 
 ## Direction contract
@@ -12,7 +12,7 @@ THESIS: A private movie night. The media and faces fill the screen; everything e
 
 OWN-WORLD: Near-black graphite, soft off-white Geist, quiet gray controls, restrained green presence, red only for leaving. Native dialogs and real Plex posters.
 
-STORY: Enter a name, see your friends, watch the host’s choice. The owner searches an existing library and chooses a poster.
+STORY: Enter a name, see your friends, watch the host’s choice. The host searches an existing library and chooses a poster.
 
 FIRST VIEWPORT: Small wordmark above a centered 390px name form. Joined desktop: film occupies the wide stage, faces sit beside it, and call controls sit below. Desktop fullscreen: faces stack at the upper right, with call actions bottom centered. Phone portrait: movie and camera strip form a centered group with a 14px gap, with call actions at the bottom. Phone landscape: movie covers the viewport, small horizontal faces sit at the lower left, device actions sit at the upper right, and hang-up and picker sit at the lower right. The picker is a compact poster grid with one search.
 
@@ -37,7 +37,7 @@ FINISH: Fresh finish review on 2026-10-13 accepted all five contract sections; d
 - Movie quality adapts independently for each remote viewer under congestion, reducing Plex bitrate and, when needed, capping resolution at 720p or 1080p. Local-network viewers have no stream bitrate cap. HLS fragment measurements can support one upward step after 60 seconds of sustained healthy capacity; native HLS upward recovery is limited by unavailable measurements. The learned cap survives seeks and subtitle changes and resets with a new movie. The existing “Original video” / “Optimized video” label is retained; this adds no controls or layout changes.
 - End of movie waits for explicit host Play to replay. Native playback errors offer Reconnect; HLS media errors receive at most two recovery attempts before the same action.
 - Inline movie and call video suppress native controls and picture-in-picture where supported. Physical Safari playback, native captions, and microphone permission persistence remain unverified.
-- The name-only guest path and owner switch are retained. Public guest identities are distinct from private session cookies. Standalone host sign-in uses Plex by default; an optional external provider can replace it. No deployment-specific account data belongs in the surface brief.
+- The name-only guest path is retained. The host switch starts off and appears only after the machine running Playparty verifies access to its configured Plex library; it stays hidden when unavailable. Public guest identities are distinct from private session cookies. Standalone hosting requires no browser Plex sign-in or email match; an optional external provider additionally requires an authenticated session. No deployment-specific account data belongs in the surface brief.
 - Home Screen and browser identity use the shipped opaque graphite companion/play icon, with chalk and muted sage forms. HTML links the Apple touch icon, favicon, and manifest. The manifest launches in standalone display with root start URL and scope; no service worker is added.
 
 ## Finish evidence

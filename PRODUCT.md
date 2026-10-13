@@ -12,15 +12,15 @@ React and Vite build the static interface; one Node service owns the party and i
 
 ## Users
 
-The Plex server owner and friends. Personal use, not a commercial service. There is no fixed participant limit.
+People with an accessible Plex server and their friends. Personal use, not a commercial service. There is no fixed participant limit.
 
 ## Product Purpose
 
-Open one URL, enter a name, and join the current call and movie. The Plex owner is always the host; guests are never promoted to host.
+Open one URL, enter a name, and join the current call and movie. Choose to host when the machine running Playparty can access its configured Plex server; otherwise the host option is hidden. Guests are never automatically promoted to host.
 
 ## Operating Context
 
-Self-hosted at a configured HTTPS address. Plex is a backend, not the client. Existing Plex metadata supplies a simplified content picker. Standalone installs authenticate the owner through Plex; an optional external session provider can replace that login entirely. Guests enter only their name.
+Self-hosted at a configured HTTPS address. Plex is a backend, not the client. Existing Plex metadata supplies a simplified content picker. Standalone installs check configured Plex library access automatically, with no browser Plex sign-in or email matching. An optional external session provider restricts host and library access to authenticated sessions. Guests enter only their name.
 
 ## Capabilities and Constraints
 

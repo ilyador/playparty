@@ -13,6 +13,7 @@ test('local owner and guests retain full quality while only connected remote vie
   const originalLimiter = MovieBudget.prototype.limiter;
   MovieBudget.prototype.limiter = function () { budgetUses++; return originalLimiter.call(this); };
   const plex = {
+    canAccess: async () => true,
     token: 'fixture-token', ownerName: 'Owner', streams: new Map(), resources: new Map(),
     async start(identity, movie, options) {
       starts.push({ identity, movie, options });

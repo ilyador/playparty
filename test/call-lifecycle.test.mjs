@@ -39,8 +39,8 @@ function module(name, imports = {}, globals = {}) {
   vm.runInNewContext(source(name), { exports, require: name => imports[name], ...globals });
   return exports;
 }
-function app(plans, timers = { setInterval, clearInterval }, initialState) {
-  const slots = [], effects = [], rooms = [], sockets = [], requests = [], audioOutputs = new Set();
+function app(plans, timers = { setInterval, clearInterval }, initialState, session = () => ({ canHost: false })) {
+  const slots = [], effects = [], rooms = [], sockets = [], requests = [], joins = [], audioOutputs = new Set();
   let cursor = 0, tree, identity = 0;
   const events = new EventTarget();
   const movie = { paused: false, pauses: 0, pause() { this.paused = true; this.pauses++; } };
@@ -107,8 +107,8 @@ function app(plans, timers = { setInterval, clearInterval }, initialState) {
     './call-capture': capture, './call-audio': audio, './movie-element': { createMovieElement: () => movie },
     './types': {
       contentTitle: content => content.title,
-      api: async () => ({ state, owner: false }),
-      post: async path => { requests.push(path); return path === 'join' ? { identity: `person-${++identity}`, name: 'Test', owner: false, state, livekitUrl: '', token: '' } : {}; },
+      api: async () => ({ state, ...await session() }),
+      post: async (path, body) => { requests.push(path); if (path === 'join') joins.push(body); return path === 'join' ? { identity: `person-${++identity}`, name: 'Test', owner: false, state, livekitUrl: '', token: '' } : {}; },
     },
   }, {
     localStorage: { getItem: () => 'Test', setItem() {} }, location: { search: '', protocol: 'http:', host: 'localhost' },
@@ -132,7 +132,8 @@ function app(plans, timers = { setInterval, clearInterval }, initialState) {
   }
   render();
   return {
-    rooms, sockets, render, movie, requests, audioOutputs,
+    rooms, sockets, render, movie, requests, joins, audioOutputs,
+    hostChoice: () => find(node => node.type === 'input' && node.props.id === 'host', tree)?.props,
     visibility(value) { document.visibilityState = value; events.dispatchEvent(new Event('visibilitychange')); render(); },
     player: () => find(node => node.type === 'player', tree)?.props,
     button: label => find(node => node.type === 'button' && node.props['aria-label'] === label, tree).props,
@@ -177,6 +178,40 @@ function clock() {
 const movieState = { type: 'state', movie: { id: 'current-movie', title: 'Current movie' }, participants: [], paused: false, position: 42, updatedAt: 8000, mediaVersion: 2 };
 const open = socket => { socket.readyState = 1; socket.onopen(); };
 const receive = (socket, state = movieState) => socket.onmessage({ data: JSON.stringify(state) });
+
+test('host choice stays hidden during discovery and clears when Plex access is lost', async t => {
+  const timer = clock(), initial = deferred();
+  let discovery = () => initial.promise;
+  const view = app([{ capture: async () => tracks() }], timer, undefined, () => discovery());
+  t.after(() => view.dispose());
+  assert.equal(view.hostChoice(), undefined, 'Loading must not briefly expose the host switch.');
+  initial.resolve({ canHost: true }); await flush(); view.render();
+  assert.equal(view.hostChoice().checked, false, 'A regular visitor is never automatically made host.');
+  view.hostChoice().onChange({ target: { checked: true } }); view.render();
+  assert.equal(view.hostChoice().checked, true);
+  discovery = async () => ({ canHost: false }); timer.advance(5000); await flush(); view.render();
+  assert.equal(view.hostChoice(), undefined);
+  discovery = async () => ({ canHost: true }); timer.advance(5000); await flush(); view.render();
+  assert.equal(view.hostChoice().checked, false, 'Recovered access must not restore a stale host selection.');
+  await view.join();
+  assert.equal(view.joins[0].host, false);
+});
+
+test('failed discovery removes host choice and overlapping refreshes cannot overwrite newer access', async t => {
+  const timer = clock(), delayed = deferred();
+  let calls = 0, discovery = async () => ({ canHost: true });
+  const view = app([{ capture: async () => tracks() }], timer, undefined, () => { calls++; return discovery(); });
+  t.after(() => view.dispose());
+  await flush(); view.render();
+  view.hostChoice().onChange({ target: { checked: true } }); view.render();
+  discovery = () => delayed.promise;
+  timer.advance(15000);
+  assert.equal(calls, 2, 'Only one discovery refresh may remain in flight.');
+  delayed.reject(new Error('Offline')); await flush(); view.render();
+  assert.equal(view.hostChoice(), undefined);
+  await view.join();
+  assert.equal(view.joins[0].host, false, 'A hidden stale switch cannot submit a host request.');
+});
 
 test('startup capture blocks a second device request, and SDK mute disables the only microphone', async t => {
   const connection = deferred(), consent = deferred(), initial = tracks();
