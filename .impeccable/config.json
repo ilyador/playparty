@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "geist",
+        "files": [
+          "src/style.css"
+        ],
+        "createdAt": "2026-10-13T00:08:22.306Z",
+        "reason": "Intentional workhorse UI face in the reviewed Playparty design: compact readable controls support the user’s pinned minimal dark call interface; the finish reviewer confirmed the typography matches the direction."
+      }
+    ]
+  }
+}

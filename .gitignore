@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+data/
+bin/
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/config.local.json
+test-results/

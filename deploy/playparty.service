@@ -1,0 +1,17 @@
+[Unit]
+Description=Playparty movie player and party server
+After=network-online.target playparty-call.service
+Wants=playparty-call.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Dev/playparty
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning server/index.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=default.target

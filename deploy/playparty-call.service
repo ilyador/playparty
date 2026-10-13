@@ -1,0 +1,16 @@
+[Unit]
+Description=Playparty LiveKit video call
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Dev/playparty
+ExecStart=%h/Dev/playparty/bin/livekit-server --config %h/Dev/playparty/data/livekit.yaml
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=default.target
