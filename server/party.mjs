@@ -85,9 +85,22 @@ export class Party {
     this.startIfReady();
   }
 
-  startIfReady(force = false) {
+  buffering(id, version) {
+    if (version !== this.mediaVersion || !this.members.has(id) || !this.movie || (this.paused && !this.wantsPlay)) return false;
+    if (!this.paused) {
+      this.position = this.currentPosition();
+      this.paused = true;
+      this.updatedAt = this.clock();
+      this.ready.clear();
+    }
+    this.ready.delete(id);
+    this.wantsPlay = true;
+    return true;
+  }
+
+  startIfReady() {
     const connected = [...this.members.values()].filter(m => m.connected);
-    if (this.wantsPlay && connected.length && (force || connected.every(m => this.ready.has(m.id)))) {
+    if (this.wantsPlay && connected.length && connected.every(m => this.ready.has(m.id))) {
       this.paused = false;
       this.wantsPlay = false;
       this.updatedAt = this.clock() + 650;

@@ -63,3 +63,26 @@ test('selection resumes from Plex progress and clamps invalid or completed offse
   party.select({ id: '1', duration: 120, resumePosition: -3 });
   assert.equal(party.position, 0);
 });
+
+test('a slow transcode freezes the shared clock until every connected viewer buffers, without forced startup', () => {
+  let now = 1000;
+  const party = new Party({ clock: () => now });
+  const host = party.join('Host', true), guest = party.join('Guest', false);
+  host.connected = guest.connected = true;
+  party.select({ id: '1', duration: 120 });
+  party.markReady(host.id, party.mediaVersion);
+  now += 40000; party.startIfReady(true);
+  assert.equal(party.paused, true);
+  party.markReady(guest.id, party.mediaVersion);
+  now += 5000;
+  const position = party.currentPosition();
+  assert.equal(party.buffering(guest.id, party.mediaVersion), true);
+  now += 30000; assert.equal(party.currentPosition(), position);
+  party.markReady(host.id, party.mediaVersion); assert.equal(party.paused, true);
+  party.markReady(guest.id, party.mediaVersion - 1); assert.equal(party.paused, true);
+  party.markReady(guest.id, party.mediaVersion); assert.equal(party.paused, false);
+  assert.equal(party.position, position);
+  party.control('pause');
+  assert.equal(party.buffering(guest.id, party.mediaVersion), false);
+  assert.equal(party.wantsPlay, false);
+});

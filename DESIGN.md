@@ -95,7 +95,7 @@ Near-black graphite surrounds the movie and faces. Soft off-white Geist keeps th
 
 The shipped interface uses one type family, restrained rounded rectangles, real Plex artwork, and functional Phosphor icons. Its density comes from the people and library content. It does not add decorative panels or a marketing layer around the call.
 
-The name form includes an “I am the host” switch below the name field. Its full label row is at least 44px high, with a 44×26px track and a 20px soft-white thumb. Off uses field-border gray; on uses the room’s quiet green. Keyboard focus outlines the track, and changes take 160ms. The switch defaults on for a recognized Plex-owner login; authentication remains enforced by the server.
+The name form includes an “I am the host” switch below the name field. Its full label row is at least 44px high, with a 44×26px track and a 20px soft-white thumb. Off uses field-border gray; on uses the room’s quiet green. Keyboard focus outlines the track, and changes take 160ms. The switch defaults on for a recognized owner login. The standalone host flow signs in through Plex; a configured external provider can supply the same host entry action. The switch selects the role rather than granting permission.
 
 **Key Characteristics:**
 - Graphite surfaces with soft off-white text.
@@ -122,7 +122,7 @@ The palette is mostly neutral; pale actions, quiet green presence, and a red lea
 
 ## Typography
 
-**Display and Body Font:** Self-hosted Geist Variable, with the platform sans-serif fallbacks recorded above. There is no separate display or mono family.
+**Display and Body Font:** Self-hosted Geist Variable, with the platform sans-serif fallbacks recorded above. Geist is the user-approved incumbent face and has a sanctioned detector exception in `.impeccable/config.json`. There is no separate display or mono family.
 
 **Character:** Moderate variable weights and slightly tight headings create a calm, compact interface. Headings are larger than labels without turning the room into a promotional page.
 
@@ -139,11 +139,17 @@ The palette is mostly neutral; pale actions, quiet green presence, and a red lea
 
 The shell is a viewport-height grid with a header, flexible stage, and footer. Desktop uses an 80px header, 32px stage gutters, and a footer of at least 108px. The arrival form is at most 390px wide. When an active movie is shown beside arrival, the form and artwork form two columns within a 1040px container.
 
-During viewing, the movie occupies the wide column and the camera strip occupies a 208px rail, with an 18px gap. At 1700px and above the rail becomes 256px. At 900px and below, cameras move beneath the movie into a horizontal 130px strip. At 600px and below, stage gutters become 12px and the strip is 100px high with horizontally scrolling 140px tiles. The footer hides redundant text and retains the call controls and owner picker action, with safe-area padding.
+During ordinary desktop viewing, the movie occupies the wide column and faces occupy a 208px side rail with an 18px gap. At 1700px and above the rail becomes 256px. At 900px and below, faces move beneath the movie into a horizontal 130px strip. At 600px and below, 12px stage gutters surround a vertically centered movie-and-call group, with a tight 14px gap. The 100px-high camera strip uses 140px-wide tiles and scrolls horizontally as needed. The phone footer keeps call controls and the host picker at the bottom, with safe-area padding.
+
+Phone landscape is a separate viewing composition, active in landscape at up to 1100px wide and 600px high. The movie covers the full viewport edge to edge, without a safe-area inset or rounded corners; cover fitting can crop its edges. Horizontal 16:10 call tiles sit 12px from the bottom and left. Their height is the smallest of 64px, 17dvh, and the available width divided across the current participants, so up to five faces stay inside the viewport. Tile gaps are 8px, and their row reserves space for the right-hand actions.
+
+In that landscape composition, microphone and camera are stacked at the upper right, 12px from the edges. Hang-up sits at the lower right, with the host movie picker directly above it. All four actions are 44px squares. The center of the right edge stays clear for the Dynamic Island area. Movie controls sit above the faces, ending 72px before the right edge, with a 44px seek interaction height.
+
+Whole-app fullscreen keeps the movie and call together. Desktop faces form a bottom-centered row with tiles up to 237×180px, shrinking to fit smaller viewports; call controls sit beneath the row. Narrow portrait fullscreen places the face row above the call controls and movie controls. Phone landscape preserves its lower-left face row and split right-side actions in both native fullscreen and the viewport fallback.
 
 The library poster grid has six columns on desktop, five below 900px, and three below 600px. Mobile search fills the dialog width and sits above the type filters. The dialog scrolls its results while its heading and tools remain in their own grid rows.
 
-Small gaps follow the recorded spacing steps; larger values frame the stage rather than creating nested panels. The responsive call grid supports up to five people and rearranges cameras to preserve usable video space.
+Small gaps follow the recorded spacing steps; larger values frame the stage rather than creating nested panels. The call layout supports up to five people and rearranges cameras to preserve usable video space.
 
 ## Elevation & Depth
 
@@ -153,7 +159,7 @@ The room is mostly flat. Tonal surfaces, clipped media, and translucent caption 
 
 ## Shapes
 
-Controls and fields use softly rounded rectangles. Small icon controls and search use the small radius; arrival controls use the medium radius; camera tiles, the desktop player, and call controls use the large radius. The library has the larger dialog radius, reduced to 14px on mobile. Mobile call controls use the medium radius and the player uses 9px corners.
+Controls and fields use softly rounded rectangles. Small icon controls and search use the small radius; arrival controls use the medium radius; camera tiles, the desktop player, and call controls use the large radius. The library has the larger dialog radius, reduced to 14px on mobile. Portrait phone call controls use the medium radius and the player uses 9px corners. Phone landscape uses 9px corners on call controls and tiles, while its edge-to-edge movie has no radius.
 
 Posters keep their native 2:3 silhouette, with 8px corners on desktop and 6px on mobile. Camera imagery is clipped inside its tile; initials and presence indicators are circular. Borders are thin and quiet rather than framing every surface.
 
@@ -183,21 +189,21 @@ Camera video fills a rounded tile. A bottom gradient holds the name and device-s
 
 ### Call Controls
 
-Microphone, camera, and leave are the three persistent call controls. Desktop device buttons are 50px squares; leave is wider at 66px. Mobile device buttons are 46px squares and leave is 54px wide. Disabled devices use a lighter graphite state. Icons have accessible labels, and microphone/camera expose their pressed state.
+Microphone, camera, and leave are the three persistent call controls. Desktop device buttons are 50px squares; leave is wider at 66px. Portrait phone device buttons are 46px squares and leave is 54px wide. Phone landscape uses 44px squares in the split right-side arrangement recorded in Layout. Off devices use a lighter graphite state. Icons have accessible labels, and microphone/camera expose their pressed state. Joining requests camera and microphone together; if access fails, a short notice points to the device buttons. Changing movies keeps the call and its device tracks connected.
 
 ### Movie Player
 
-The contained video keeps a 16:9 stage and uses letterboxing when needed. Title and playback controls sit on gradients. Playing controls fade after 2600ms of inactivity; pointer activity and keyboard focus restore them, and paused playback keeps them visible. The host can play, pause, seek, and stop; Stop returns to the picker without ending the call. Movie mute, subtitle selection, and fullscreen are compact icon controls. Subtitle selection uses the browser's native options behind the Phosphor subtitle icon, with an active filled state. Episode titles include their series name.
+The contained video keeps a 16:9 stage and uses letterboxing when needed. Phone landscape uses the full-viewport cover treatment recorded in Layout. Title and playback controls sit on gradients. Playing controls fade after 2600ms of inactivity; pointer movement, pointer press, and keyboard focus restore them. Focused actions and paused playback remain visible. The host can play, pause, seek, and stop; Stop returns to the picker without ending the call. Movie mute, subtitle selection, and fullscreen are compact icon controls. Subtitle selection uses native options behind the Phosphor subtitle icon, with an active filled state. Episode titles include their series name.
 
-Fullscreen uses the application surface so the movie fills the viewport while cameras stay overlaid at the bottom center. The camera row stays within the screen on mobile, and call controls remain reachable beneath it. On narrow screens the call controls sit above the movie control row to avoid collisions.
+Fullscreen requests the whole application surface, with a viewport-filling fallback if the browser rejects native fullscreen. Escape exits the fallback when no picker dialog is open. Fullscreen text captions move above overlaid faces. The movie and camera videos use inline playback with native controls, picture-in-picture, and remote playback suppressed where supported. These attributes are a best-effort browser request; the reviewed layout does not claim physical Safari certification.
 
-Fullscreen camera tiles are 237×180px on desktop, scaled to fit on smaller screens. Native fullscreen is preferred; a viewport-filling mode preserves the same layout if the browser denies native fullscreen. Playing controls hide after pointer inactivity; keyboard focus keeps the relevant controls visible. Text captions move above the overlaid cameras.
+Movie audio lowers to 30% of its current baseline during speech when the browser permits volume changes. Browsers with fixed media volume temporarily mute only the movie instead. The user's movie-mute choice remains in effect. Loading and synchronization messages stay inside the media area; the shared movie waits for every participant to be ready rather than advancing on a forced timeout. Autoplay restrictions show a pale “Tap to watch” action. Playback errors offer Reconnect.
 
 The lobby artwork gives the series name the main title role, with the episode title below it and a quieter season/episode line. Long titles clamp to two lines. The picker adds a Continue filter when Plex supplies continue-watching items; a quiet progress line and Resume time identify partially watched titles without adding another dialog.
 
 Poster buttons stack their content from the top, with a two-line title slot and a consistent metadata row. Compact season/episode labels keep that row readable on mobile. Extra resume text never shifts neighboring artwork or titles vertically.
 
-The seek track is visually 3px high, inside a 24px desktop interaction area and 44px mobile interaction area. Its position label is explicit, and time uses tabular numerals. Loading, synchronization, gesture, and error states remain inside the media area.
+The seek track is visually 3px high, inside a 24px desktop interaction area and 44px phone interaction area. Its position label is explicit, and time uses tabular numerals.
 
 ## Do's and Don'ts
 
@@ -206,7 +212,8 @@ The seek track is visually 3px high, inside a 24px desktop interaction area and 
 - **Do** use self-hosted Geist and functional Phosphor icons.
 - **Do** use real Plex artwork and metadata in the library.
 - **Do** keep keyboard focus visible and icon actions explicitly named.
-- **Do** preserve the mobile camera strip and the seek control's 44px interaction height.
+- **Do** preserve the portrait camera strip, the landscape lower-left face row, and the phone seek control's 44px interaction height.
+- **Do** keep phone landscape controls out of the center of the right edge.
 
 ### Don't:
 - **Don't** use poster colors as permanent interface accents.

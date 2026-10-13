@@ -20,7 +20,7 @@ Open one URL, enter a name, and join the current call and movie. The Plex owner 
 
 ## Operating Context
 
-Hosted as part of an existing homelab at its configured HTTPS address. Plex is a backend, not the client. Existing Plex metadata supplies a simplified content picker. The existing homelab owner session identifies the host without adding a guest login.
+Self-hosted at a configured HTTPS address. Plex is a backend, not the client. Existing Plex metadata supplies a simplified content picker. Standalone installs authenticate the owner through Plex; an optional external session provider can replace that login entirely. Guests enter only their name.
 
 ## Capabilities and Constraints
 

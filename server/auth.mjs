@@ -11,9 +11,9 @@ export function cookies(header = '') {
   return result;
 }
 
-export function ownerAuthenticator(url, ownerEmail) {
+export function ownerAuthenticator(url, ownerEmail, cookieNames = ['owner_session']) {
   return async (header = '') => {
-    const authCookies = header.split(';').map(cookie => cookie.trim()).filter(cookie => cookie.split('=', 1)[0] === 'homelab_session').join('; ');
+    const authCookies = header.split(';').map(cookie => cookie.trim()).filter(cookie => cookieNames.includes(cookie.split('=', 1)[0])).join('; ');
     if (!authCookies || !ownerEmail) return false;
     try {
       const response = await fetch(url, { headers: { Cookie: authCookies, Accept: 'application/json' }, redirect: 'manual', signal: AbortSignal.timeout(3000) });

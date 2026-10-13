@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-13T00:05:16.262Z",
+  "generatedAt": "2026-10-13T14:54:35.048Z",
   "title": "Design System: Playparty",
   "extensions": {
     "colorMeta": {
@@ -120,7 +120,7 @@
     "typographyMeta": {
       "headline": {
         "displayName": "Arrival Headline",
-        "purpose": "Name-only arrival; related waiting headlines use the smaller implemented scale."
+        "purpose": "Arrival heading; pinned self-hosted Geist has the sanctioned incumbent font exception."
       },
       "title": {
         "displayName": "Library Title",
@@ -185,7 +185,7 @@
     ],
     "breakpoints": [
       {
-        "name": "mobile",
+        "name": "phone",
         "value": "600px"
       },
       {
@@ -195,6 +195,10 @@
       {
         "name": "wide-stage",
         "value": "1700px"
+      },
+      {
+        "name": "phone-landscape",
+        "value": "(orientation: landscape) and (max-height: 600px) and (max-width: 1100px)"
       }
     ]
   },
@@ -218,17 +222,17 @@
       "name": "Call Device Button",
       "kind": "button",
       "refersTo": "button-call",
-      "description": "Persistent microphone or camera control; lighter graphite indicates an off device.",
+      "description": "Microphone or camera action: footer on desktop and portrait, 44px stacked controls at the upper right in phone landscape; lighter graphite indicates an off device.",
       "html": "<button class=\"ds-call\" aria-label=\"Mute microphone\" aria-pressed=\"true\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"23\" height=\"23\" fill=\"currentColor\" viewBox=\"0 0 256 256\" aria-hidden=\"true\"><path d=\"M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V240a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z\"></path></svg></button>",
-      "css": ".ds-call{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;cursor:pointer;border:0;transition:background-color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),transform 120ms var(--ease,cubic-bezier(.23,1,.32,1));width:50px;height:50px;display:grid;place-items:center;border-radius:12px;background:var(--raised,#25282d);color:#eeefec;}.ds-call:focus-visible{outline:2px solid #eeefec;outline-offset:4px}.ds-call:active:not(:disabled){transform:scale(.97)}.ds-call:disabled{cursor:default;opacity:.45}@media(hover:hover) and (pointer:fine){.ds-call:hover:not(:disabled){background:#383d44;}}@media(prefers-reduced-motion:reduce){.ds-call{transition-duration:.01ms}}.ds-call.ds-device-off{color:#c4c9d0;background:#363a40}@media(max-width:600px){.ds-call{width:46px;height:46px;border-radius:10px}}"
+      "css": ".ds-call{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;cursor:pointer;border:0;transition:background-color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),transform 120ms var(--ease,cubic-bezier(.23,1,.32,1));width:50px;height:50px;display:grid;place-items:center;border-radius:12px;background:var(--raised,#25282d);color:#eeefec;}.ds-call:focus-visible{outline:2px solid #eeefec;outline-offset:4px}.ds-call:active:not(:disabled){transform:scale(.97)}.ds-call:disabled{cursor:default;opacity:.45}@media(hover:hover) and (pointer:fine){.ds-call:hover:not(:disabled){background:#383d44;}}@media(prefers-reduced-motion:reduce){.ds-call{transition-duration:.01ms}}.ds-call.ds-device-off{color:#c4c9d0;background:#363a40}@media(max-width:600px){.ds-call{width:46px;height:46px;border-radius:10px}}@media(orientation:landscape) and (max-height:600px) and (max-width:1100px){.ds-call{width:44px;height:44px;border-radius:9px;background:rgba(37,40,45,.9)}}"
     },
     {
       "name": "Leave Button",
       "kind": "button",
       "refersTo": "button-leave",
-      "description": "Wider red disconnect action among the three call controls.",
+      "description": "Red disconnect action: wider in the desktop and portrait footer, 44px square at the lower right in phone landscape.",
       "html": "<button class=\"ds-leave\" aria-label=\"Leave the call\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"25\" height=\"25\" fill=\"currentColor\" viewBox=\"0 0 256 256\" aria-hidden=\"true\"><path d=\"M236.28,161.84a16,16,0,0,1-18.38,5.06l-49-17.39-.29-.11a16,16,0,0,1-9.72-11.59l-6.21-29.75h0a76.52,76.52,0,0,0-49.68.11l-5.9,29.52a16,16,0,0,1-9.75,11.73l-.29.11-49,17.37A15.8,15.8,0,0,1,32.35,168a16,16,0,0,1-12.63-6.14c-17.23-22.22-15.3-51.71,4.69-71.71,56.15-56.17,151-56.17,207.18,0h0C251.58,110.13,253.51,139.62,236.28,161.84ZM216,192H40a8,8,0,0,0,0,16H216a8,8,0,0,0,0-16Z\"></path></svg></button>",
-      "css": ".ds-leave{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;cursor:pointer;border:0;transition:background-color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),transform 120ms var(--ease,cubic-bezier(.23,1,.32,1));width:66px;height:50px;display:grid;place-items:center;border-radius:12px;background:#b74543;color:#fff0e9;}.ds-leave:focus-visible{outline:2px solid #eeefec;outline-offset:4px}.ds-leave:active:not(:disabled){transform:scale(.97)}.ds-leave:disabled{cursor:default;opacity:.45}@media(hover:hover) and (pointer:fine){.ds-leave:hover:not(:disabled){background:#cb5350;}}@media(prefers-reduced-motion:reduce){.ds-leave{transition-duration:.01ms}}@media(max-width:600px){.ds-leave{width:54px;height:46px;border-radius:10px}}"
+      "css": ".ds-leave{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;cursor:pointer;border:0;transition:background-color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),transform 120ms var(--ease,cubic-bezier(.23,1,.32,1));width:66px;height:50px;display:grid;place-items:center;border-radius:12px;background:#b74543;color:#fff0e9;}.ds-leave:focus-visible{outline:2px solid #eeefec;outline-offset:4px}.ds-leave:active:not(:disabled){transform:scale(.97)}.ds-leave:disabled{cursor:default;opacity:.45}@media(hover:hover) and (pointer:fine){.ds-leave:hover:not(:disabled){background:#cb5350;}}@media(prefers-reduced-motion:reduce){.ds-leave{transition-duration:.01ms}}@media(max-width:600px){.ds-leave{width:54px;height:46px;border-radius:10px}}@media(orientation:landscape) and (max-height:600px) and (max-width:1100px){.ds-leave{width:44px;height:44px;border-radius:9px}}"
     },
     {
       "name": "Icon Button",
@@ -263,21 +267,21 @@
     {
       "name": "Poster Item",
       "kind": "card",
-      "description": "Documented missing-poster treatment. Runtime titles and images come from Plex; this specimen uses an explicit placeholder label.",
+      "description": "Top-aligned poster with a fixed two-line title slot, metadata row, and optional resume detail. This missing-poster specimen uses an explicit placeholder; runtime content comes from Plex.",
       "html": "<button class=\"ds-poster\"><span class=\"ds-poster-image\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\" fill=\"currentColor\" viewBox=\"0 0 256 256\" aria-hidden=\"true\"><path d=\"M216,104H102.09L210,75.51a8,8,0,0,0,5.68-9.84l-8.16-30a15.93,15.93,0,0,0-19.42-11.13L35.81,64.74a15.75,15.75,0,0,0-9.7,7.4,15.51,15.51,0,0,0-1.55,12L32,111.56c0,.14,0,.29,0,.44v88a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V112A8,8,0,0,0,216,104ZM192.16,40l6,22.07-22.62,6L147.42,51.83Zm-66.69,17.6,28.12,16.24-36.94,9.75L88.53,67.37Zm-79.4,44.62-6-22.08,26.5-7L94.69,89.4ZM208,200H48V120H208v80Z\"></path></svg><span class=\"ds-poster-play\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" fill=\"currentColor\" viewBox=\"0 0 256 256\" aria-hidden=\"true\"><path d=\"M240,128a15.74,15.74,0,0,1-7.6,13.51L88.32,229.65a16,16,0,0,1-16.2.3A15.86,15.86,0,0,1,64,216.13V39.87a15.86,15.86,0,0,1,8.12-13.82,16,16,0,0,1,16.2.3L232.4,114.49A15.74,15.74,0,0,1,240,128Z\"></path></svg></span></span><strong>Library title</strong><span class=\"ds-poster-detail\">Metadata from Plex</span></button>",
-      "css": ".ds-poster{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;cursor:pointer;border:0;transition:background-color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),transform 120ms var(--ease,cubic-bezier(.23,1,.32,1));display:block;min-width:0;width:100%;text-align:left;background:transparent;padding:0;color:#eeefec;}.ds-poster:focus-visible{outline:2px solid #eeefec;outline-offset:4px}.ds-poster:active:not(:disabled){transform:scale(.97)}.ds-poster:disabled{cursor:default;opacity:.45}@media(hover:hover) and (pointer:fine){.ds-poster:hover:not(:disabled){}}@media(prefers-reduced-motion:reduce){.ds-poster{transition-duration:.01ms}}.ds-poster-image{aspect-ratio:2/3;position:relative;width:100%;background:#292d33;border-radius:8px;overflow:hidden;display:grid;place-items:center;color:#a4adba}.ds-poster>strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;line-height:1.45;margin-top:10px;font-weight:500}.ds-poster-detail{display:block;font-size:11px;line-height:1.5;color:#a0a8b3;margin-top:4px}.ds-poster-play{opacity:0;position:absolute;inset:0;background:rgba(0,0,0,.42);display:grid;place-items:center;color:#f1f2ed;transition:opacity 160ms var(--ease,cubic-bezier(.23,1,.32,1))}.ds-poster:focus-visible .ds-poster-play{opacity:1}@media(hover:hover) and (pointer:fine){.ds-poster:hover .ds-poster-play{opacity:1}}@media(max-width:600px){.ds-poster-image{border-radius:6px}.ds-poster>strong{font-size:11px}.ds-poster-detail{font-size:10px}}@media(prefers-reduced-motion:reduce){.ds-poster-play{transition-duration:.01ms}}"
+      "css": ".ds-poster{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;cursor:pointer;border:0;transition:background-color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),transform 120ms var(--ease,cubic-bezier(.23,1,.32,1));display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;min-width:0;width:100%;text-align:left;background:transparent;padding:0;color:#eeefec;}.ds-poster:focus-visible{outline:2px solid #eeefec;outline-offset:4px}.ds-poster:active:not(:disabled){transform:scale(.97)}.ds-poster:disabled{cursor:default;opacity:.45}@media(hover:hover) and (pointer:fine){.ds-poster:hover:not(:disabled){}}@media(prefers-reduced-motion:reduce){.ds-poster{transition-duration:.01ms}}.ds-poster-image{flex-shrink:0;aspect-ratio:2/3;position:relative;width:100%;background:#292d33;border-radius:8px;overflow:hidden;display:grid;place-items:center;color:#a4adba}.ds-poster>strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.9em;flex-shrink:0;font-size:12px;line-height:1.45;margin-top:10px;font-weight:500}.ds-poster-detail{display:block;min-height:1.5em;font-size:11px;line-height:1.5;color:#a0a8b3;margin-top:4px}.ds-poster-play{opacity:0;position:absolute;inset:0;background:rgba(0,0,0,.42);display:grid;place-items:center;color:#f1f2ed;transition:opacity 160ms var(--ease,cubic-bezier(.23,1,.32,1))}.ds-poster:focus-visible .ds-poster-play{opacity:1}@media(hover:hover) and (pointer:fine){.ds-poster:hover .ds-poster-play{opacity:1}}@media(max-width:600px){.ds-poster-image{border-radius:6px}.ds-poster>strong{font-size:11px}.ds-poster-detail{font-size:10px}}@media(prefers-reduced-motion:reduce){.ds-poster-play{transition-duration:.01ms}}"
     },
     {
       "name": "Camera Placeholder",
       "kind": "card",
-      "description": "Camera-off tile with initials, clipped silhouette, and gradient name caption; a documentation specimen.",
+      "description": "Camera-off tile with initials and a gradient name caption. Ordinary desktop uses a side rail; portrait uses a strip; phone landscape uses small horizontal tiles at the lower left. This is a documentation specimen.",
       "html": "<div class=\"ds-face\"><div class=\"ds-face-placeholder\"><span class=\"ds-initials\">G</span></div><div class=\"ds-face-caption\"><span>Guest</span></div></div>",
-      "css": ".ds-face{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;position:relative;width:208px;aspect-ratio:16/10;min-width:0;min-height:0;border-radius:12px;overflow:hidden;background:#21242a}.ds-face-placeholder{position:absolute;inset:0;display:grid;place-items:center;background:#22252b}.ds-initials{font-size:21px;font-weight:480;letter-spacing:-.04em;color:#bac1cb;width:54px;height:54px;display:grid;place-items:center;border-radius:50%;background:#30343c}.ds-face-caption{position:absolute;inset:auto 0 0;display:flex;justify-content:space-between;align-items:center;padding:28px 13px 11px;background:linear-gradient(transparent,rgba(0,0,0,.68));font-size:12px;color:#f0f1ec;gap:12px}.ds-face-caption>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:600px){.ds-face{width:140px}.ds-initials{width:40px;height:40px;font-size:17px}.ds-face-caption{padding:25px 9px 9px;font-size:11px}}"
+      "css": ".ds-face{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;position:relative;width:208px;aspect-ratio:16/10;min-width:0;min-height:0;border-radius:12px;overflow:hidden;background:#21242a}.ds-face-placeholder{position:absolute;inset:0;display:grid;place-items:center;background:#22252b}.ds-initials{font-size:21px;font-weight:480;letter-spacing:-.04em;color:#bac1cb;width:54px;height:54px;display:grid;place-items:center;border-radius:50%;background:#30343c}.ds-face-caption{position:absolute;inset:auto 0 0;display:flex;justify-content:space-between;align-items:center;padding:28px 13px 11px;background:linear-gradient(transparent,rgba(0,0,0,.68));font-size:12px;color:#f0f1ec;gap:12px}.ds-face-caption>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:600px){.ds-face{width:140px}.ds-initials{width:40px;height:40px;font-size:17px}.ds-face-caption{padding:25px 9px 9px;font-size:11px}}@media(orientation:landscape) and (max-height:600px) and (max-width:1100px){.ds-face{width:102.4px;height:64px;aspect-ratio:16/10;border-radius:9px}.ds-face-caption{font-size:10px;padding:18px 8px 6px;gap:6px}.ds-initials{width:28px;height:28px;font-size:12px}}"
     }
   ],
   "narrative": {
     "northStar": "The Private Screening Room",
-    "overview": "Near-black graphite surrounds the movie and faces. Soft off-white Geist keeps the interface legible without competing with media. The room feels quiet and personal: a small wordmark, short labels, and controls that earn their space.\n\nThe shipped interface uses one type family, restrained rounded rectangles, real Plex artwork, and functional Phosphor icons. Its density comes from the people and library content. It does not add decorative panels or a marketing layer around the call.",
+    "overview": "Near-black graphite surrounds the movie and faces. Soft off-white Geist keeps the interface legible without competing with media. The room feels quiet and personal: a small wordmark, short labels, and controls that earn their space.\n\nThe shipped interface uses one type family, restrained rounded rectangles, real Plex artwork, and functional Phosphor icons. Its density comes from the people and library content. It does not add decorative panels or a marketing layer around the call.\n\nThe name form includes an \u201cI am the host\u201d switch below the name field. Its full label row is at least 44px high, with a 44\u00d726px track and a 20px soft-white thumb. Off uses field-border gray; on uses the room\u2019s quiet green. Keyboard focus outlines the track, and changes take 160ms. The switch defaults on for a recognized owner login. The standalone host flow signs in through Plex; a configured external provider can supply the same host entry action. The switch selects the role rather than granting permission.",
     "keyCharacteristics": [
       "Graphite surfaces with soft off-white text.",
       "Movie and camera imagery establish the visual hierarchy.",
@@ -306,7 +310,8 @@
       "**Do** use self-hosted Geist and functional Phosphor icons.",
       "**Do** use real Plex artwork and metadata in the library.",
       "**Do** keep keyboard focus visible and icon actions explicitly named.",
-      "**Do** preserve the mobile camera strip and the seek control's 44px interaction height."
+      "**Do** preserve the portrait camera strip, the landscape lower-left face row, and the phone seek control's 44px interaction height.",
+      "**Do** keep phone landscape controls out of the center of the right edge."
     ],
     "donts": [
       "**Don't** use poster colors as permanent interface accents.",

@@ -17,7 +17,7 @@ export function Face({ participant, local = false, large = false }: { participan
     return () => { track.detach(element); };
   }, [track]);
   return <div className={`face${large ? ' face-large' : ''}`}>
-    <video ref={video} autoPlay muted playsInline className={`${visible ? 'visible' : ''}${local ? ' self-video' : ''}`} />
+    <video ref={video} autoPlay muted playsInline controls={false} disablePictureInPicture disableRemotePlayback className={`${visible ? 'visible' : ''}${local ? ' self-video' : ''}`} />
     {!visible && <div className="face-placeholder"><span className="initials">{initials}</span></div>}
     <div className="face-caption"><span>{name}{local && <span className="you-label"> · You</span>}</span>
       <span className="face-indicators">{!participant.isCameraEnabled && <VideoCameraSlash size={14} />}{!participant.isMicrophoneEnabled && <MicrophoneSlash size={14} />}</span>

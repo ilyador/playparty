@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type Hls from 'hls.js';
 import { ArrowsIn, ArrowsOut, Pause, Play, SpeakerHigh, SpeakerSlash, SpinnerGap, Stop, Subtitles } from '@phosphor-icons/react';
 import { api, contentTitle, positionAt, post, type PartyState } from './types';
+import { movieAudio } from './movie-audio';
 
 type Playback = { url: string; offset: number; quality: string; resolution: string; mediaVersion: number; subtitleMode: 'none' | 'segmented' | 'burn' };
 const time = (value: number) => {
@@ -9,7 +10,7 @@ const time = (value: number) => {
   return seconds >= 3600 ? `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 };
 
-export default function Player({ state, owner, clockOffset, onReady, onStop, fullscreen, onFullscreen }: { state: PartyState; owner: boolean; clockOffset: number; onReady: (version: number) => void; onStop: () => Promise<void>; fullscreen: boolean; onFullscreen: (active: boolean) => void }) {
+export default function Player({ state, owner, speaking, clockOffset, onReady, onBuffering, onTelemetry, onStop, fullscreen, onFullscreen }: { state: PartyState; owner: boolean; speaking: boolean; clockOffset: number; onReady: (version: number) => void; onBuffering: (version: number) => void; onTelemetry: (sample: Record<string, string | number | boolean>) => void; onStop: () => Promise<void>; fullscreen: boolean; onFullscreen: (active: boolean) => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const stateRef = useRef(state);
@@ -28,9 +29,66 @@ export default function Player({ state, owner, clockOffset, onReady, onStop, ful
   const [stopping, setStopping] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const seeking = useRef(false);
+  const gestureRequired = useRef(false);
+  const pendingPlay = useRef<Promise<void> | null>(null);
+  const audio = useRef<ReturnType<typeof movieAudio> | null>(null);
+  const readyCheck = useRef<() => void>(() => {});
+  const bufferingReported = useRef(false);
+  const lastCorrection = useRef(0);
+  const lastSample = useRef(0);
+  const onBufferingRef = useRef(onBuffering);
+  const onTelemetryRef = useRef(onTelemetry);
   stateRef.current = state;
   onReadyRef.current = onReady;
   clockRef.current = clockOffset;
+  onBufferingRef.current = onBuffering;
+  onTelemetryRef.current = onTelemetry;
+
+  function ahead(element: HTMLVideoElement, target: number) {
+    for (let i = 0; i < element.buffered.length; i++) {
+      if (target >= element.buffered.start(i) - 0.1 && target < element.buffered.end(i)) return Math.max(0, element.buffered.end(i) - target);
+    }
+    return 0;
+  }
+  function report(event: string) {
+    const element = video.current;
+    if (!element) return;
+    const current = stateRef.current;
+    const target = Math.max(0, positionAt(current, Date.now() + clockRef.current) - offsetRef.current);
+    onTelemetryRef.current({ event, mediaVersion: current.mediaVersion, position: element.currentTime + offsetRef.current, target: target + offsetRef.current,
+      drift: element.currentTime - target, bufferAhead: ahead(element, element.currentTime), readyState: element.readyState, rate: element.playbackRate,
+      paused: element.paused, waiting: current.waiting, seeking: element.seeking });
+  }
+  function holdForBuffer() {
+    const current = stateRef.current;
+    if (current.paused || bufferingReported.current || performance.now() - lastCorrection.current < 750) return;
+    bufferingReported.current = true;
+    report('waiting'); onBufferingRef.current(current.mediaVersion);
+  }
+
+  useEffect(() => {
+    if (!video.current) return;
+    const controller = movieAudio(video.current);
+    audio.current = controller;
+    return () => { controller.dispose(); if (audio.current === controller) audio.current = null; };
+  }, []);
+  useEffect(() => { audio.current?.setMuted(muted); }, [muted]);
+  useEffect(() => { audio.current?.setSpeech(speaking); }, [speaking]);
+
+  function setGestureRequired(required: boolean) {
+    gestureRequired.current = required; setNeedsGesture(required);
+  }
+  function playVideo(fromGesture = false) {
+    const element = video.current;
+    if (!element || (!fromGesture && (gestureRequired.current || pendingPlay.current))) return;
+    const version = stateRef.current.mediaVersion;
+    if (fromGesture) setGestureRequired(false);
+    const attempt = element.play();
+    pendingPlay.current = attempt;
+    attempt.catch(error => {
+      if (error.name === 'NotAllowedError' && element.paused && !stateRef.current.paused && stateRef.current.mediaVersion === version) { setGestureRequired(true); report('needs-gesture'); }
+    }).finally(() => { if (pendingPlay.current === attempt) pendingPlay.current = null; });
+  }
 
   function placeCaptions() {
     const element = video.current;
@@ -38,7 +96,8 @@ export default function Player({ state, owner, clockOffset, onReady, onStop, ful
     const bounds = element.getBoundingClientRect();
     const app = container.current?.closest('.app');
     const faces = (document.fullscreenElement || app?.classList.contains('is-fullscreen')) && app?.querySelector('.people-strip')?.getBoundingClientRect();
-    const line = faces && bounds.height ? Math.max(20, Math.min(80, (faces.top - bounds.top - 64) / bounds.height * 100)) : 80;
+    const overlapsMovie = faces && faces.left < bounds.right && faces.right > bounds.left;
+    const line = faces && overlapsMovie && bounds.height ? Math.max(20, Math.min(80, (faces.top - bounds.top - 64) / bounds.height * 100)) : 80;
     for (const track of element.textTracks) for (const cue of track.cues || []) {
       if (cue instanceof VTTCue) { cue.snapToLines = false; cue.line = line; }
     }
@@ -71,13 +130,36 @@ export default function Player({ state, owner, clockOffset, onReady, onStop, ful
     let hls: Hls | undefined;
     let nativeSubtitles: (() => void) | undefined;
     let readySent = false;
+    let wasWaiting = false;
     playback.current = null;
-    setError(''); setLoading(true); setNeedsGesture(false);
+    bufferingReported.current = false;
+    if (!stateRef.current.paused) {
+      bufferingReported.current = true; report('waiting'); onBufferingRef.current(state.mediaVersion);
+    }
+    setError(''); setLoading(true); setGestureRequired(false);
+    const playing = () => { setGestureRequired(false); bufferingReported.current = false; report('playing'); };
+    const waiting = () => { setLoading(true); holdForBuffer(); };
+    element.addEventListener('playing', playing);
+    element.addEventListener('waiting', waiting);
     const markReady = () => {
       nativeSubtitles?.();
+      if (element.readyState >= 3) setLoading(false);
+      const current = stateRef.current;
+      if (current.mediaVersion !== state.mediaVersion) return;
+      if (!current.waiting) { wasWaiting = false; return; }
+      if (!wasWaiting) { readySent = false; wasWaiting = true; }
+      const target = Math.max(0, current.position - offsetRef.current);
+      const needed = Math.min(4, Math.max(0.2, (current.movie?.duration || Infinity) - current.position - 0.1));
+      if (!playback.current || element.readyState < 1) return;
+      if (!element.seeking && Math.abs(element.currentTime - target) > 0.35) {
+        if (performance.now() - lastCorrection.current >= 2000) { lastCorrection.current = performance.now(); element.currentTime = target; }
+        return;
+      }
+      if (element.readyState < 2 || element.seeking || ahead(element, target) < needed) return;
       setLoading(false);
-      if (!readySent) { readySent = true; onReadyRef.current(state.mediaVersion); }
+      if (!readySent) { readySent = true; report('ready'); onReadyRef.current(state.mediaVersion); }
     };
+    readyCheck.current = markReady;
     element.addEventListener('canplay', markReady);
     const hevc = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L153.B0"');
     api<Playback>('playback', { method: 'POST', body: JSON.stringify({ hevc, subtitleId }), signal: abort.signal }).then(async result => {
@@ -91,10 +173,11 @@ export default function Player({ state, owner, clockOffset, onReady, onStop, ful
         // Plex marks the requested rendition DEFAULT=YES. Let Hls select it
         // after the active subtitle group exists, rather than during parsing.
         hls.subtitleDisplay = result.subtitleMode === 'segmented';
+        hls.on(Hls.Events.BUFFER_APPENDED, markReady);
         hls.on(Hls.Events.ERROR, (_, data) => {
           if (!data.fatal || abort.signal.aborted) return;
           if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
-          else { setError('The movie could not load. Try again.'); setLoading(false); }
+          else { report('fatal'); setError('The movie could not load. Try again.'); setLoading(false); }
         });
         hls.loadSource(result.url);
         hls.attachMedia(element);
@@ -106,21 +189,35 @@ export default function Player({ state, owner, clockOffset, onReady, onStop, ful
         element.src = result.url;
       } else { setError('This browser cannot play this stream. Try Safari, Chrome or Edge.'); setLoading(false); }
     }).catch(error => { if (!abort.signal.aborted) { setError(error.message); setLoading(false); } });
-    return () => { abort.abort(); element.pause(); hls?.destroy(); if (nativeSubtitles) element.textTracks.removeEventListener('addtrack', nativeSubtitles); element.removeEventListener('canplay', markReady); element.removeAttribute('src'); element.load(); };
+    return () => { abort.abort(); readyCheck.current = () => {}; element.pause(); hls?.destroy(); if (nativeSubtitles) element.textTracks.removeEventListener('addtrack', nativeSubtitles); element.removeEventListener('canplay', markReady); element.removeEventListener('playing', playing); element.removeEventListener('waiting', waiting); element.removeAttribute('src'); element.load(); };
   }, [state.movie?.id, state.mediaVersion, subtitleId]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
       const element = video.current;
       const current = stateRef.current;
-      if (!element || !playback.current || element.readyState < 2) return;
+      if (!element) return;
+      if (Date.now() - lastSample.current >= 10000) { lastSample.current = Date.now(); report('sample'); }
+      readyCheck.current();
+      if (!playback.current) return;
       const now = Date.now() + clockRef.current;
       const desired = Math.max(0, positionAt(current, now) - offsetRef.current);
-      if (Math.abs(element.currentTime - desired) > 1) element.currentTime = desired;
+      if (current.paused || now < current.updatedAt) {
+        if (!element.paused) element.pause();
+        if (!current.waiting && !element.seeking && ahead(element, desired) > 0.2 && Math.abs(element.currentTime - desired) > 0.35 && performance.now() - lastCorrection.current >= 2000) {
+          lastCorrection.current = performance.now(); element.currentTime = desired;
+        }
+        if (!seeking.current) setPosition(element.currentTime + offsetRef.current);
+        return;
+      }
+      if (element.readyState < 3) { holdForBuffer(); return; }
+      if (Math.abs(element.currentTime - desired) > 1 && !element.seeking) {
+        if (ahead(element, desired) < 0.5) { holdForBuffer(); return; }
+        if (performance.now() - lastCorrection.current >= 2000) { lastCorrection.current = performance.now(); element.currentTime = desired; report('correction'); }
+      }
       const difference = desired - element.currentTime;
       element.playbackRate = !current.paused && Math.abs(difference) > 0.12 ? difference > 0 ? 1.03 : 0.97 : 1;
-      if (current.paused || now < current.updatedAt) { if (!element.paused) element.pause(); }
-      else if (element.paused) element.play().catch(() => setNeedsGesture(true));
+      if (element.paused) playVideo();
       if (!seeking.current) setPosition(element.currentTime + offsetRef.current);
     }, 350);
     return () => window.clearInterval(interval);
@@ -160,9 +257,9 @@ export default function Player({ state, owner, clockOffset, onReady, onStop, ful
   const subtitles = state.movie?.subtitles || [];
   const duration = state.movie?.duration || 1;
   return <div className={`movie-player${controls || state.paused ? ' controls-visible' : ''}`} ref={container} onPointerMove={showControls} onPointerDown={showControls} onFocusCapture={showControls}>
-    <video ref={video} playsInline muted={muted} className="movie-video" onWaiting={() => setLoading(true)} onPlaying={() => setLoading(false)} onEnded={() => { if (owner) control('pause'); }} />
+    <video ref={video} playsInline controls={false} disablePictureInPicture disableRemotePlayback controlsList="nofullscreen noremoteplayback" muted={muted} className="movie-video" onWaiting={() => setLoading(true)} onPlaying={() => setLoading(false)} onEnded={() => { if (owner) control('pause'); }} />
     {(loading || state.waiting) && !error && <div className="player-loading"><SpinnerGap className="spinner" size={30} /><span>{state.waiting && !loading ? 'Getting everyone in sync…' : 'Getting the movie ready…'}</span></div>}
-    {needsGesture && !error && <button className="watch-prompt" onClick={() => { video.current?.play().then(() => setNeedsGesture(false)).catch(() => {}); }}><Play size={22} weight="fill" />Click to watch</button>}
+    {needsGesture && !state.paused && !error && <button className="watch-prompt" onClick={() => playVideo(true)}><Play size={22} weight="fill" />Tap to watch</button>}
     {error && <div className="player-error" role="alert"><p>{error}</p><button className="secondary-button" onClick={() => { window.location.reload(); }}>Reconnect</button></div>}
     <div className="movie-topline"><div className="movie-title"><strong>{state.movie && contentTitle(state.movie)}</strong>{state.movie?.episodeDetails && <span>{state.movie.episodeDetails}</span>}</div><span className="quality-label">{quality}</span></div>
     <div className="movie-controls">

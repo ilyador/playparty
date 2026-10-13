@@ -10,7 +10,11 @@ export default function App() {
   const [name, setName] = useState(() => localStorage.getItem('playparty-name') || '');
   const [host, setHost] = useState(false);
   const [loginUrl, setLoginUrl] = useState('/login');
+  const [loginLabel, setLoginLabel] = useState('Sign in to host');
+  const [plexLogin, setPlexLogin] = useState(false);
+  const [recognizedOwner, setRecognizedOwner] = useState(false);
   const hostTouched = useRef(false);
+  const loginInProgress = useRef(new URLSearchParams(location.search).has('plex-login'));
   const [joined, setJoined] = useState<Joined | null>(null);
   const [state, setState] = useState<PartyState | null>(null);
   const [joining, setJoining] = useState(false);
@@ -20,6 +24,7 @@ export default function App() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [mic, setMic] = useState(false);
   const [camera, setCamera] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
   const [connection, setConnection] = useState('Connecting');
   const [clockOffset, setClockOffset] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
@@ -30,12 +35,26 @@ export default function App() {
   const readyVersion = useRef<number | null>(null);
 
   useEffect(() => {
+    if (!new URLSearchParams(location.search).has('plex-login')) return;
+    history.replaceState(null, '', location.pathname);
+    hostTouched.current = true; setHost(true); setJoining(true);
+    post('auth/complete', {}).then(() => {
+      setRecognizedOwner(true); setNotice('Signed in. You can join as the host.');
+    }).catch(error => setError(error.message)).finally(() => {
+      loginInProgress.current = false; setJoining(false); window.dispatchEvent(new Event('focus'));
+    });
+  }, []);
+
+  useEffect(() => {
     if (joined) return;
     const abort = new AbortController();
-    const refresh = () => api<{ state: PartyState; owner: boolean; loginUrl: string }>('session', { signal: abort.signal }).then(data => {
-      setState(data.state); setLoginUrl(data.loginUrl);
+    const refresh = () => {
+      if (loginInProgress.current) return;
+      return api<{ state: PartyState; owner: boolean; loginUrl: string; loginLabel: string; plexLogin: boolean }>('session', { signal: abort.signal }).then(data => {
+      setState(data.state); setLoginUrl(data.loginUrl); setLoginLabel(data.loginLabel); setPlexLogin(data.plexLogin); setRecognizedOwner(data.owner);
       if (!hostTouched.current) setHost(data.owner);
-    }).catch(() => { if (!abort.signal.aborted) setError('Playparty is unavailable. Try again in a moment.'); });
+      }).catch(() => { if (!abort.signal.aborted) setError('Playparty is unavailable. Try again in a moment.'); });
+    };
     refresh();
     const timer = setInterval(refresh, 5000);
     window.addEventListener('focus', refresh);
@@ -71,6 +90,7 @@ export default function App() {
     connectEvents();
     const room = new Room({
       adaptiveStream: true, dynacast: true,
+      audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       videoCaptureDefaults: { resolution: VideoPresets.h1080 },
       publishDefaults: {
         videoCodec: 'h264', videoEncoding: { maxBitrate: 3_000_000, maxFramerate: 30 },
@@ -84,6 +104,7 @@ export default function App() {
       setParticipants([room.localParticipant, ...room.remoteParticipants.values()]);
       setMic(room.localParticipant.isMicrophoneEnabled);
       setCamera(room.localParticipant.isCameraEnabled);
+      setSpeaking(room.activeSpeakers.some(participant => participant.isMicrophoneEnabled));
     };
     const attachAudio = (track: RemoteTrack) => {
       if (track.kind !== Track.Kind.Audio) return;
@@ -94,6 +115,7 @@ export default function App() {
       audioElements.current.set(track.sid!, element);
     };
     room.on(RoomEvent.TrackSubscribed, track => { attachAudio(track); refresh(); });
+    room.on(RoomEvent.ActiveSpeakersChanged, refresh);
     room.on(RoomEvent.TrackUnsubscribed, track => {
       const element = audioElements.current.get(track.sid!);
       if (element) { track.detach(element); element.remove(); audioElements.current.delete(track.sid!); }
@@ -106,8 +128,9 @@ export default function App() {
     room.connect(joined.livekitUrl, joined.token).then(async () => {
       if (disposed) return;
       setConnection('Connected'); refresh();
-      const devices = await Promise.allSettled([room.localParticipant.setMicrophoneEnabled(true), room.localParticipant.setCameraEnabled(true)]);
-      if (!disposed && devices.some(result => result.status === 'rejected')) setNotice('Use the camera and mic buttons to enable your devices.');
+      await room.localParticipant.enableCameraAndMicrophone().catch(() => {
+        if (!disposed) setNotice('Use the camera and mic buttons to enable your devices.');
+      });
       if (!disposed) { await room.startAudio().catch(() => {}); refresh(); }
     }).catch(() => { if (!disposed) { setConnection('Disconnected'); setNotice('The call could not connect. Check your connection and rejoin.'); } });
     return () => {
@@ -120,6 +143,10 @@ export default function App() {
 
   async function join(event: React.FormEvent) {
     event.preventDefault(); if (!name.trim()) return;
+    if (host && plexLogin && !recognizedOwner) {
+      localStorage.setItem('playparty-name', name.trim());
+      location.assign(loginUrl); return;
+    }
     setJoining(true); setError('');
     try {
       const data = await post<Joined>('join', { name: name.trim(), host });
@@ -135,7 +162,7 @@ export default function App() {
     await post('leave', {}).catch(() => {});
     call.current?.disconnect(); socket.current?.close();
     readyVersion.current = null;
-    setJoined(null); setParticipants([]); setNotice(''); setPicker(false);
+    setJoined(null); setParticipants([]); setSpeaking(false); setNotice(''); setPicker(false);
   }
   async function stopMovie() {
     const next = await post<PartyState>('stop', {});
@@ -170,25 +197,27 @@ export default function App() {
           <label className="host-choice" htmlFor="host"><span>I am the host</span><span className="host-switch"><input id="host" type="checkbox" role="switch" checked={host} disabled={joining} onChange={event => { hostTouched.current = true; setHost(event.target.checked); setError(''); }} /><span className="host-switch-track" aria-hidden="true" /></span></label>
           <button className="join-button" disabled={joining || !name.trim()}>{joining ? <><SpinnerGap className="spinner" size={20} />Joining…</> : <>Join<ArrowRight size={21} /></>}</button>
           {error && <p className="inline-error" role="alert">{error}</p>}
-          {host && error.startsWith('Sign into homelab') && <a className="host-login-link" href={loginUrl} target="_blank" rel="noreferrer">Sign into homelab</a>}
+          {host && error && <a className="host-login-link" href={loginUrl} target={plexLogin ? undefined : '_blank'} rel="noreferrer">{loginLabel}</a>}
           <p className="join-caption">{state?.hostPresent ? 'Your people are already here.' : 'Come on in. Make yourself comfortable.'}</p>
         </form>
         {state?.movie && <div className="joining-movie"><img src={`/api/image/${state.movie.id}?kind=art`} alt="" /><div>{state.movie.seriesTitle ? <><strong className="series-name">{state.movie.seriesTitle}</strong><span className="episode-name">{state.movie.title}</span></> : <><span>Watching together</span><strong>{state.movie.title}</strong></>}<span className="episode-details">{state.movie.episodeDetails || state.movie.year}</span></div></div>}
       </div>
     </section> : <>
       <section className={`stage${watching ? ' has-movie' : ''}`}>
-        {watching && state ? <div className="movie-stage"><Player key={state.movie?.id} state={state} owner={joined.owner} clockOffset={clockOffset} fullscreen={fullscreen} onFullscreen={setFullscreen} onStop={stopMovie} onReady={version => { readyVersion.current = version; if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'ready', mediaVersion: version })); }} /></div>
+        {watching && state ? <div className="movie-stage"><Player key={state.movie?.id} state={state} owner={joined.owner} speaking={speaking} clockOffset={clockOffset} fullscreen={fullscreen} onFullscreen={setFullscreen} onStop={stopMovie} onReady={version => { readyVersion.current = version; if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'ready', mediaVersion: version })); }} onBuffering={version => { readyVersion.current = null; if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'buffering', mediaVersion: version })); }} onTelemetry={sample => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'telemetry', ...sample })); }} /></div>
           : <div className={`call-stage participants-${Math.min(ordered.length, 5)}`}>
             {remote.length === 0 && <div className="waiting"><span className="waiting-icon"><VideoCamera size={32} weight="light" /></span><h1>Room for good company.</h1><p>{joined.owner ? 'Send the link. Your friends will join you here.' : state?.hostPresent ? 'You’re in. The host will pick something to watch.' : 'You’re in. Waiting for the host.'}</p>{joined.owner && <button className="secondary-button" onClick={() => setPicker(true)}><FilmSlate size={19} />Choose something to watch</button>}</div>}
             {ordered.map(participant => <Face key={participant.identity} participant={participant} local={participant.identity === joined.identity} large={remote.length > 0} />)}
           </div>}
-        {watching && <aside className="people-strip" aria-label="People in the call">{ordered.map(participant => <Face key={participant.identity} participant={participant} local={participant.identity === joined.identity} />)}</aside>}
+        {watching && <aside className="people-strip" aria-label="People in the call" style={{ '--people-count': Math.max(1, ordered.length) } as React.CSSProperties}>{ordered.map(participant => <Face key={participant.identity} participant={participant} local={participant.identity === joined.identity} />)}</aside>}
       </section>
       <footer className="call-footer">
         <div className="footer-content">{watching && state?.movie ? <><strong>{contentTitle(state.movie)}</strong><span>{state.movie.episodeDetails || state.movie.year}{state.paused && !state.waiting ? ' · Paused' : ''}</span></> : <><strong>{joined.name}</strong><span>{joined.owner ? 'You’re hosting' : 'Just you and your people'}</span></>}</div>
         <div className="call-controls">
+          <div className="call-device-controls">
           <button className={`call-button${!mic ? ' device-off' : ''}`} onClick={() => toggleDevice('mic')} aria-label={mic ? 'Mute microphone' : 'Turn on microphone'} aria-pressed={mic}>{mic ? <Microphone size={23} /> : <MicrophoneSlash size={23} />}</button>
           <button className={`call-button${!camera ? ' device-off' : ''}`} onClick={() => toggleDevice('camera')} aria-label={camera ? 'Turn off camera' : 'Turn on camera'} aria-pressed={camera}>{camera ? <VideoCamera size={23} /> : <VideoCameraSlash size={23} />}</button>
+          </div>
           <span className="controls-divider" />
           <button className="call-button hangup" onClick={leave} aria-label="Leave the call"><PhoneDisconnect size={25} weight="fill" /></button>
         </div>

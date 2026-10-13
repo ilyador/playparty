@@ -6,11 +6,11 @@ import { ownerAuthenticator } from '../server/auth.mjs';
 import { Plex } from '../server/plex.mjs';
 import { WebSocket } from 'ws';
 
-test('host recognition delegates to the live homelab session, preserving duplicate cookies', async () => {
+test('host recognition delegates to the external owner session, preserving duplicate cookies', async () => {
   let receivedCookie;
   const server = http.createServer((req, res) => {
     receivedCookie = req.headers.cookie;
-    const valid = receivedCookie?.includes('homelab_session=current');
+    const valid = receivedCookie?.includes('owner_session=current');
     res.writeHead(valid ? 200 : 401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(valid ? { authenticated: true, email: 'owner@example.com' } : { authenticated: false }));
   });
@@ -18,12 +18,12 @@ test('host recognition delegates to the live homelab session, preserving duplica
   const url = `http://127.0.0.1:${server.address().port}/api/auth/session`;
   try {
     const valid = ownerAuthenticator(url, 'owner@example.com');
-    assert.equal(await valid('homelab_session=current; playparty_session=private'), true);
-    assert.equal(receivedCookie, 'homelab_session=current');
-    assert.equal(await valid('homelab_session=stale; homelab_session=current'), true);
-    assert.equal(receivedCookie, 'homelab_session=stale; homelab_session=current');
-    assert.equal(await valid('homelab_session=forged'), false);
-    assert.equal(await ownerAuthenticator(url, 'other@example.com')('homelab_session=current'), false);
+    assert.equal(await valid('owner_session=current; playparty_session=private'), true);
+    assert.equal(receivedCookie, 'owner_session=current');
+    assert.equal(await valid('owner_session=stale; owner_session=current'), true);
+    assert.equal(receivedCookie, 'owner_session=stale; owner_session=current');
+    assert.equal(await valid('owner_session=forged'), false);
+    assert.equal(await ownerAuthenticator(url, 'other@example.com')('owner_session=current'), false);
     assert.equal(await valid(''), false);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

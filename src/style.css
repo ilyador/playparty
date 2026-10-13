@@ -96,6 +96,7 @@ input::placeholder { color: #9298a1; opacity: 1; }
 .footer-content { min-width: 0; display: grid; gap: 7px; }
 .footer-content strong { font-weight: 500; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .footer-content > span { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-device-controls { display: contents; }
 .call-controls { display: flex; align-items: center; gap: 10px; }
 .call-button { width: 50px; height: 50px; display: grid; place-items: center; border-radius: 12px; background: #25282d; }
 .call-button.device-off { color: #c4c9d0; background: #363a40; }
@@ -219,7 +220,7 @@ input::placeholder { color: #9298a1; opacity: 1; }
   .waiting .secondary-button { font-size: 12px; }
   .face-large .initials { width: 64px; height: 64px; font-size: 27px; }
   .face-caption { padding: 25px 9px 9px; font-size: 11px; }
-  .stage.has-movie { height: calc(100dvh - 168px); grid-template-rows: minmax(0,1fr) auto; }
+  .stage.has-movie { height: calc(100dvh - 168px); grid-template-rows: auto auto; align-content: center; }
   .movie-player { border-radius: 9px; }
   .people-strip { height: 100px; gap: 8px; overflow-x: auto; justify-content: flex-start; }
   .people-strip .face { flex: 0 0 140px; }
@@ -279,3 +280,41 @@ input::placeholder { color: #9298a1; opacity: 1; }
 }
 
 .app.is-fullscreen.watching { position: fixed; inset: 0; z-index: 20; }
+
+/* Landscape phones keep the movie edge to edge, with people overlaid. */
+@media (orientation: landscape) and (max-height: 600px) and (max-width: 1100px) {
+  .app.watching { position: relative; display: block; height: 100dvh; min-height: 0; padding: 0; overflow: hidden; }
+  .watching .app-header { display: none; }
+  .watching .stage.has-movie { position: absolute; inset: 0; display: block; width: 100%; height: 100%; padding: 0; }
+  .watching .movie-stage { display: block; width: 100%; height: 100%; margin: 0; }
+  .watching .movie-player { width: 100%; height: 100%; max-height: none; aspect-ratio: auto; border-radius: 0; }
+  .watching .movie-video { object-fit: cover; }
+  .watching .people-strip { position: absolute; left: 12px; right: auto; top: auto; bottom: 12px; transform: none; flex-direction: row; justify-content: center; gap: 8px; width: max-content; max-width: calc(100% - 104px); height: min(64px, 17dvh, calc((100vw - 104px - (var(--people-count, 1) - 1) * 8px) / var(--people-count, 1) / 1.6)); overflow: hidden; pointer-events: none; }
+  .watching .people-strip .face { width: auto; height: 100%; flex: 0 0 auto; aspect-ratio: 16/10; border-radius: 9px; }
+  .watching .face-caption { font-size: 10px; padding: 18px 8px 6px; gap: 6px; }
+  .watching .face-indicators { display: none; }
+  .watching .call-footer { position: absolute; left: auto; right: 12px; top: 12px; bottom: 12px; transform: none; display: block; width: 44px; min-height: 0; padding: 0; z-index: 2; }
+  .watching .footer-content { display: none; }
+  .watching .call-controls { flex-direction: column; align-items: center; gap: 8px; height: 100%; }
+  .watching .call-device-controls { display: flex; flex-direction: column; gap: 8px; }
+  .watching .call-button, .watching .call-button.hangup { width: 44px; height: 44px; border-radius: 9px; background: rgba(37,40,45,.9); }
+  .watching .call-button.hangup { margin-top: auto; background: #b74543; }
+  .watching .controls-divider { display: none; }
+  .watching .footer-action { position: absolute; right: 0; bottom: 52px; }
+  .watching .choose-button { width: 44px; height: 44px; padding: 0; justify-content: center; background: rgba(37,40,45,.9); }
+  .watching .choose-button > span { display: none; }
+  .watching .movie-topline { left: 12px; right: 72px; padding: 14px 16px 32px; font-size: 12px; }
+  .watching .quality-label { display: none; }
+  .watching .movie-controls { left: 12px; right: 72px; bottom: 84px; padding: 28px 12px 3px; }
+  .watching .seek { height: 44px; }
+  .watching .icon-button { width: 44px; height: 44px; }
+  .watching .notice { bottom: 14px; }
+  .app:is(:fullscreen, .is-fullscreen).watching { padding: 0; }
+  .app:is(:fullscreen, .is-fullscreen).watching .movie-stage { margin: 0; width: 100%; }
+  .app:is(:fullscreen, .is-fullscreen).watching .people-strip { left: 12px; right: auto; top: auto; bottom: 12px; transform: none; width: max-content; height: min(64px, 17dvh, calc((100vw - 104px - (var(--people-count, 1) - 1) * 8px) / var(--people-count, 1) / 1.6)); flex-direction: row; gap: 8px; }
+  .app:is(:fullscreen, .is-fullscreen).watching .people-strip .face { width: auto; height: 100%; flex: 0 0 auto; aspect-ratio: 16/10; }
+  .app:is(:fullscreen, .is-fullscreen).watching .call-footer { left: auto; right: 12px; top: 12px; bottom: 12px; transform: none; display: block; padding: 0; }
+  .app:is(:fullscreen, .is-fullscreen).watching .footer-action { display: block; }
+  .app:is(:fullscreen, .is-fullscreen).watching .call-controls { flex-direction: column; height: 100%; gap: 8px; }
+  .app:is(:fullscreen, .is-fullscreen).watching .call-button, .app:is(:fullscreen, .is-fullscreen).watching .call-button.hangup { width: 44px; height: 44px; }
+}

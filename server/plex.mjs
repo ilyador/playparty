@@ -39,8 +39,8 @@ export class Plex {
     return response;
   }
 
-  async json(path, identity) {
-    return (await (await this.request(path, identity)).json()).MediaContainer || {};
+  async json(path, identity, options) {
+    return (await (await this.request(path, identity, options)).json()).MediaContainer || {};
   }
 
   simplify(item) {
@@ -168,6 +168,17 @@ export class Plex {
     }).catch(() => {});
   }
 
+  async transcodeMetrics(identity) {
+    const stream = this.streams.get(identity);
+    if (!stream) return { available: false };
+    const data = await this.json('/transcode/sessions', undefined, { signal: AbortSignal.timeout(3000) });
+    const row = array(data.TranscodeSession).find(item => item.id === stream.session || String(item.key || '').includes(stream.session));
+    if (!row) return { available: false };
+    return { available: true, speed: Number(row.speed) || 0, progress: Number(row.progress) || 0,
+      throttled: row.throttled === true || row.throttled === '1', hardware: Boolean(row.transcodeHwEncoding && row.transcodeHwEncoding !== '0'),
+      videoDecision: ['copy', 'transcode'].includes(row.videoDecision) ? row.videoDecision : 'unknown' };
+  }
+
   async start(identity, movie, { position = 0, hevc = false, maxBitrate = 50000, subtitleId = '' } = {}) {
     const item = await this.metadata(movie.id);
     const subtitle = this.subtitleTracks(item).find(track => track.id === subtitleId);
@@ -200,6 +211,7 @@ export class Plex {
       const chosen = array(decision.Metadata)[0]?.Media?.[0];
       const tracks = array(chosen?.Part?.[0]?.Stream);
       const video = tracks.find(track => Number(track.streamType) === 1);
+      stream.diagnostics = { videoDecision: video?.decision, inputCodec: media?.videoCodec, maxBitrate };
       const start = new URL(`/video/:/transcode/universal/start.m3u8?${params}`, this.url);
       return {
         url: this.addResource(stream, start.toString()),
