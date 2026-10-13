@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
 export class Party {
-  constructor({ clock = Date.now, capacity = 5 } = {}) {
+  constructor({ clock = Date.now } = {}) {
     this.clock = clock;
-    this.capacity = capacity;
     this.members = new Map();
     this.movie = null;
     this.position = 0;
     this.paused = true;
     this.updatedAt = clock();
     this.mediaVersion = 0;
+    this.readinessVersion = 0;
     this.ready = new Set();
     this.wantsPlay = false;
   }
@@ -19,12 +19,6 @@ export class Party {
     if (!name) throw Object.assign(new Error('Enter your name to join.'), { status: 400 });
     const identity = owner ? 'owner' : id;
     const existing = this.members.get(identity);
-    if (!existing) {
-      const guests = [...this.members.values()].filter(m => !m.owner).length;
-      if ((!owner && guests >= this.capacity - 1) || this.members.size >= this.capacity) {
-        throw Object.assign(new Error('The party is full. Try again when someone leaves.'), { status: 409 });
-      }
-    }
     const member = { id: identity, name, owner: Boolean(owner), lastSeen: this.clock(), connected: false, ...existing };
     member.name = name;
     member.lastSeen = this.clock();
@@ -33,7 +27,7 @@ export class Party {
   }
 
   currentPosition() {
-    return this.position + (this.paused ? 0 : Math.max(0, this.clock() - this.updatedAt) / 1000);
+    return Math.min(this.position + (this.paused ? 0 : Math.max(0, this.clock() - this.updatedAt) / 1000), this.movie?.duration || Number.MAX_SAFE_INTEGER);
   }
 
   select(movie) {
@@ -43,6 +37,7 @@ export class Party {
     this.updatedAt = this.clock();
     this.mediaVersion += 1;
     this.ready.clear();
+    this.readinessVersion += 1;
     this.wantsPlay = true;
   }
 
@@ -53,28 +48,33 @@ export class Party {
     this.updatedAt = this.clock();
     this.mediaVersion += 1;
     this.ready.clear();
+    this.readinessVersion += 1;
     this.wantsPlay = false;
   }
 
   control(action, position) {
     if (!this.movie) return;
     if (action === 'pause') {
-      this.position = this.currentPosition();
+      // The ended element can finish just ahead of the shared clock.
+      this.position = this.movie.duration > 0 && Number(position) >= this.movie.duration ? this.movie.duration : this.currentPosition();
       this.paused = true;
       this.wantsPlay = false;
       this.updatedAt = this.clock();
     } else if (action === 'play') {
+      if (this.movie.duration > 0 && this.currentPosition() >= this.movie.duration) this.control('seek', 0);
       this.wantsPlay = true;
       this.startIfReady();
     } else if (action === 'seek') {
       const next = Number(position);
       if (!Number.isFinite(next)) return;
       const playing = !this.paused || this.wantsPlay;
-      this.position = Math.min(Math.max(0, next), this.movie.duration || Number.MAX_SAFE_INTEGER);
+      // Readiness needs future frames, so an end seek must stay playable.
+      this.position = Math.min(Math.max(0, next), Math.max(0, (this.movie.duration || Number.MAX_SAFE_INTEGER) - 1));
       this.paused = true;
       this.updatedAt = this.clock();
       this.mediaVersion += 1;
       this.ready.clear();
+      this.readinessVersion += 1;
       this.wantsPlay = playing;
     }
   }
@@ -92,6 +92,7 @@ export class Party {
       this.paused = true;
       this.updatedAt = this.clock();
       this.ready.clear();
+      this.readinessVersion += 1;
     }
     this.ready.delete(id);
     this.wantsPlay = true;
@@ -115,6 +116,7 @@ export class Party {
       paused: this.paused,
       updatedAt: this.updatedAt,
       mediaVersion: this.mediaVersion,
+      readinessVersion: this.readinessVersion,
       waiting: this.wantsPlay,
       hostPresent: [...this.members.values()].some(m => m.owner && m.connected),
       participants: [...this.members.values()].filter(m => m.connected).map(({ id, name, owner }) => ({ id, name, owner })),

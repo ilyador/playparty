@@ -11,7 +11,7 @@ export function playbackMetrics(message) {
   for (const key of ['paused', 'waiting', 'seeking', 'sharedPaused', 'needsGesture', 'captionsShowing', 'audio', 'video', 'microphonePublished', 'microphoneEnabled', 'microphoneMuted', 'microphoneUserMuted', 'echoCancellation', 'noiseSuppression', 'autoGainControl', 'canPlaybackAudio', 'speech', 'ducked', 'volumeWritable', 'movieMuted']) if (typeof message[key] === 'boolean') result[key] = message[key];
   for (const key of ['microphonePermission', 'cameraPermission']) if (['granted', 'prompt', 'denied'].includes(message[key])) result[key] = message[key];
   if (['live', 'ended'].includes(message.microphoneReadyState)) result.microphoneReadyState = message.microphoneReadyState;
-  if (['NotAllowedError', 'NotFoundError', 'NotReadableError', 'OverconstrainedError', 'AbortError', 'SecurityError', 'TypeError', 'Error', 'UnknownError'].includes(message.captureError)) result.captureError = message.captureError;
+  if (['NotAllowedError', 'NotFoundError', 'NotReadableError', 'OverconstrainedError', 'AbortError', 'SecurityError', 'InvalidStateError', 'UnknownError'].includes(message.captureError)) result.captureError = message.captureError;
   if (['hls', 'native'].includes(message.renderer)) result.renderer = message.renderer;
   if (['bandwidth', 'stall', 'recovery'].includes(message.qualityReason)) result.qualityReason = message.qualityReason;
   return result;

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -39,6 +39,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
   const party = new Party();
   const sessions = new Map();
+  const sessionIdentityKey = randomBytes(32);
   const sockets = new Map();
   const callSockets = new Set();
   const playbackLocks = new Map();
@@ -50,6 +51,8 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     else res.destroy();
   });
   let waitTimer;
+  let closing = false;
+  let closePromise;
   let selectionRevision = 0;
   let progressQueue = Promise.resolve();
   let progressSession = randomUUID();
@@ -74,6 +77,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), fullscreen=(self)');
     if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
+    if (closing) return res.status(503).json({ error: 'Playparty is restarting. Try again shortly.' });
     const requestOrigin = req.headers.origin;
     if (!['GET', 'HEAD'].includes(req.method) && requestOrigin && ![origin, 'http://localhost:5175', 'http://localhost:5176', 'http://127.0.0.1:5175', 'http://127.0.0.1:5176'].includes(requestOrigin)) {
       return res.status(403).json({ error: 'Open Playparty from its own URL.' });
@@ -82,15 +86,16 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
   });
 
   function participant(req) { return sessions.get(cookies(req.headers.cookie).playparty_session); }
+  function currentMember(member) { return !closing && member && party.members.get(member.id) === member; }
   function requireMember(req, res, next) {
     const member = participant(req);
-    if (!member || !party.members.has(member.id)) return res.status(401).json({ error: 'Enter your name to join.' });
+    if (!currentMember(member)) return res.status(401).json({ error: 'Enter your name to join.' });
     req.member = member;
     member.lastSeen = Date.now();
     next();
   }
   async function requireHost(req, res, next) {
-    if (!req.member?.owner || !await authenticateOwner(req.headers.cookie)) return res.status(403).json({ error: 'Only the Plex owner can choose what plays.' });
+    if (!req.member?.owner || !await authenticateOwner(req.headers.cookie) || !currentMember(req.member)) return res.status(403).json({ error: 'Only the Plex owner can choose what plays.' });
     next();
   }
   function broadcast() {
@@ -126,17 +131,27 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
   });
   app.post('/api/join', async (req, res) => {
     const authenticatedOwner = Boolean(await authenticateOwner(req.headers.cookie));
+    if (closing) return res.status(503).json({ error: 'Playparty is restarting. Try again shortly.' });
     if (req.body?.host === true && !authenticatedOwner) {
       return res.status(403).json({ error: 'Sign in as the Plex owner, then try again.' });
     }
     const owner = authenticatedOwner && req.body?.host !== false;
     const sid = sessionId(req, res, req.secure);
     const previous = sessions.get(sid);
-    const member = party.join(req.body?.name, owner, sid);
+    const guestIdentity = createHmac('sha256', sessionIdentityKey).update(sid).digest('base64url');
+    const member = party.join(req.body?.name, owner, guestIdentity);
+    member.connected = false;
+    party.ready.delete(member.id);
+    sockets.get(member.id)?.close();
+    for (const [otherSid, otherMember] of sessions) {
+      if (otherSid === sid || otherMember.id !== member.id) continue;
+      sessions.delete(otherSid);
+    }
     if (previous && previous.id !== member.id) {
       sockets.get(previous.id)?.close();
       party.members.delete(previous.id);
       await plex.stop(previous.id);
+      if (closing) return res.status(503).json({ error: 'Playparty is restarting. Try again shortly.' });
       call?.removeParticipant(roomName, previous.id).catch(() => {});
     }
     member.local = localNetwork(req.ip);
@@ -222,15 +237,18 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     const currentBitrate = remote ? typeof requested === 'number' && Number.isFinite(requested) && requested >= 1500 ? Math.min(allowance, Math.floor(requested)) : allowance : 0;
     const qualityReason = ['bandwidth', 'stall', 'recovery'].includes(req.body?.qualityReason) ? req.body.qualityReason : 'initial';
     const version = party.mediaVersion;
+    const stillJoined = () => participant(req) === req.member && currentMember(req.member);
     const previous = playbackLocks.get(req.member.id) || Promise.resolve();
     const start = previous.catch(() => {}).then(async () => {
+      if (!stillJoined()) throw Object.assign(new Error('Enter your name to join.'), { status: 401 });
       if (version !== party.mediaVersion) throw Object.assign(new Error('The movie changed. Reconnect to watch.'), { status: 409 });
       const result = await plex.start(req.member.id, { ...party.movie, version }, {
         position: party.currentPosition(), hevc: req.body?.hevc === true, maxBitrate: currentBitrate, remote, adaptive: remote && currentBitrate < allowance,
         subtitleId: typeof req.body?.subtitleId === 'string' ? req.body.subtitleId : '',
       });
-      if (version !== party.mediaVersion) {
+      if (!stillJoined() || version !== party.mediaVersion) {
         await plex.stop(req.member.id);
+        if (!stillJoined()) throw Object.assign(new Error('Enter your name to join.'), { status: 401 });
         throw Object.assign(new Error('The movie changed. Reconnect to watch.'), { status: 409 });
       }
       return result;
@@ -277,7 +295,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
       delete req.headers.cookie;
       return proxy.ws(req, socket, head);
     }
-    if (req.url !== '/events' || !session || !party.members.has(session.id) || !allowedOrigin) return socket.destroy();
+    if (req.url !== '/events' || !currentMember(session) || !allowedOrigin) return socket.destroy();
     wss.handleUpgrade(req, socket, head, ws => {
       sockets.get(session.id)?.close();
       sockets.set(session.id, ws);
@@ -286,7 +304,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
       party.ready.delete(session.id);
       if (party.movie && party.buffering(session.id, party.mediaVersion)) logPlayback({ event: 'join-wait', viewer: session.id, mediaVersion: party.mediaVersion, position: party.position });
       ws.on('message', raw => {
-        if (sockets.get(session.id) !== ws || !party.members.has(session.id)) return;
+        if (sockets.get(session.id) !== ws || !currentMember(session)) return;
         try {
           const message = JSON.parse(raw.toString());
           session.lastSeen = Date.now();
@@ -325,6 +343,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
       ws.on('close', () => {
         if (sockets.get(session.id) !== ws) return;
         sockets.delete(session.id);
+        if (!currentMember(session)) return;
         session.connected = false;
         session.lastSeen = Date.now();
         party.startIfReady();
@@ -337,6 +356,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     const now = Date.now();
     if (party.members.get('owner')?.connected && now - lastProgressAt >= 10000) saveProgress();
     for (const [sid, member] of sessions) {
+      if (!currentMember(member)) { sessions.delete(sid); continue; }
       if ((!member.connected && now - member.lastSeen > 45000) || now - member.lastSeen > 90000) {
         sockets.get(member.id)?.close();
         sockets.delete(member.id);
@@ -364,17 +384,22 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     console.error('Playparty request:', error.message);
     res.status(error.status || 500).json({ error: error.status ? error.message : 'Something went wrong. Try again.' });
   });
-  const close = async () => {
+  const close = () => closePromise ||= (async () => {
+    closing = true;
+    selectionRevision += 1;
     clearInterval(ticker); clearTimeout(waitTimer);
+    const progress = saveProgress('stopped');
     for (const socket of wss.clients) socket.close(1001, 'Server restarting');
     for (const socket of callSockets) socket.destroy();
-    await Promise.all([saveProgress('stopped'), ...[...plex.streams.keys()].map(id => plex.stop(id))]);
     const closed = new Promise(resolve => server.close(resolve));
     server.closeAllConnections();
     for (const socket of wss.clients) socket.terminate();
     proxy.close();
+    await Promise.allSettled([...playbackLocks.values()]);
+    await Promise.all([progress, ...[...plex.streams.keys()].map(id => plex.stop(id))]);
+    sessions.clear();
     await closed;
-  };
+  })();
   return { app, server, party, sessions, close };
 }
 

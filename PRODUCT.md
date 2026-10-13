@@ -12,7 +12,7 @@ React and Vite build the static interface; one Node service owns the party and i
 
 ## Users
 
-The Plex server owner and up to four friends. Personal use, not a commercial service.
+The Plex server owner and friends. Personal use, not a commercial service. There is no fixed participant limit.
 
 ## Product Purpose
 
@@ -24,7 +24,7 @@ Self-hosted at a configured HTTPS address. Plex is a backend, not the client. Ex
 
 ## Capabilities and Constraints
 
-One party, at most five participants, displayed names, camera and microphone, synchronized movie playback, host content selection and playback controls. Original media when compatible, Plex conversion when necessary. Guests enter only their name. No chat, rooms to choose, accounts to create, billing, reactions, playlists or other social features. Keep movie traffic from starving the call. Verify a second participant over an independent network connection.
+One party, displayed names, camera and microphone, synchronized movie playback, host content selection and playback controls. Original media when compatible, Plex conversion when necessary. Guests enter only their name. No chat, rooms to choose, accounts to create, billing, reactions, playlists or other social features. Keep movie traffic from starving the call. Verify a second participant over an independent network connection.
 
 ## Brand Commitments
 

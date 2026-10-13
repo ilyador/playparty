@@ -39,7 +39,7 @@ Edit `.env` and restart Playparty after changing settings.
 
 Plex sends compatible original video when it fits the viewer's allowance and converts for unsupported codecs, image subtitles, or bandwidth limits. Text subtitles use WebVTT. Browser support, Plex hardware acceleration, and your network determine quality. [Hardware transcoding requires Plex Pass](https://support.plex.tv/articles/115002178853-using-hardware-accelerated-streaming/); software conversion of 4K video with image subtitles can be demanding.
 
-Playparty adjusts remote streams per viewer. Sustained slow downloads or buffering lower that viewer's Plex bitrate and resolution; a healthy connection recovers one quality step at a time. Local network viewers keep compatible original quality. No Plex server-wide quality settings are changed. Stream replacement uses the shared buffering clock so viewers resume together.
+Playparty adjusts remote streams per viewer. Sustained slow downloads or buffering lower that viewer's Plex bitrate and resolution; a healthy connection recovers one quality step at a time. Browsers using native HLS can lower quality after repeated stalls but keep that setting until rejoining. Local network viewers keep compatible original quality. No Plex server-wide quality settings are changed. Stream replacement uses the shared buffering clock so viewers resume together.
 
 ## Existing authentication provider
 
@@ -105,6 +105,6 @@ npm run build
 npm run test:browser
 ```
 
-The browser check needs local Plex, LiveKit, and Chrome (`TEST_CHROME` overrides the browser path; `TEST_MOVIE` selects a library title). It uses an isolated party, fake camera/microphone devices, and a test-only owner authenticator. It checks real movie/call playback, fullscreen, subtitles, episode labels, Stop, blocked autoplay, and synchronized recovery from a twelve-second transcode delay. `TEST_REMOTE=1` also checks adaptive quality under throttling. Run `node --disable-warning=ExperimentalWarning test/rejoin-browser.mjs` for refresh/rejoin and stuck-seek recovery. Content-dependent checks are skipped when suitable media is unavailable. `TEST_CAPTURE=1` writes ignored review captures; delete them after review.
+The browser check needs local Plex, LiveKit, and Chrome (`TEST_CHROME` overrides the browser path; `TEST_MOVIE` selects a library title). It uses an isolated party, fake camera/microphone devices, and a test-only owner authenticator. It checks real movie/call playback, fullscreen, subtitles, episode labels, Stop, blocked autoplay, and synchronized recovery from a twelve-second transcode delay. `TEST_REMOTE=1` also checks adaptive quality under throttling. Run `node --disable-warning=ExperimentalWarning test/rejoin-browser.mjs` for refresh/rejoin and stuck-seek recovery, or `node --disable-warning=ExperimentalWarning test/call-browser.mjs` for multi-client calls and device controls. Content-dependent checks are skipped when suitable media is unavailable. `TEST_CAPTURE=1` writes ignored review captures; delete them after review.
 
 Private configuration, authentication keys, binaries, dependencies, builds, and local captures are excluded from Git. No media files, library history, or real account details are included in this repository.

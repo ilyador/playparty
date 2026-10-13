@@ -22,8 +22,9 @@ type CaptureParticipant = Pick<LocalParticipant, 'createTracks' | 'publishTrack'
 // request that is still awaiting the browser's permission dialog.
 export function callCapture(participant: CaptureParticipant, onDiagnostic?: (sample: CaptureDiagnostic) => void) {
   let disposed = false;
-  let tracks: LocalTrack[] = [];
+  const tracks = new Set<LocalTrack>();
   let starting: Promise<boolean> | undefined;
+  const enabling = new Map<'mic' | 'camera', Promise<boolean>>();
   const publishing = new Set<LocalTrack>();
   const releasing = new Map<LocalTrack, Promise<void>>();
 
@@ -51,43 +52,67 @@ export function callCapture(participant: CaptureParticipant, onDiagnostic?: (sam
     if (!releasing.has(track)) {
       // LiveKit waits for an in-flight publish before unpublishing. Stop now so
       // the device is released immediately, then remove any late publication.
-      releasing.set(track, participant.unpublishTrack(track, true).then(() => {}, () => {}).finally(() => track.stop()));
+      releasing.set(track, participant.unpublishTrack(track, true).then(() => {}, () => {}).finally(() => {
+        track.stop(); tracks.delete(track); publishing.delete(track); releasing.delete(track);
+      }));
     }
     return releasing.get(track)!;
   }
 
-  function stop() {
-    for (const track of tracks) {
+  function stop(owned: Iterable<LocalTrack> = tracks) {
+    for (const track of owned) {
       track.stop();
       if (publishing.has(track)) void release(track);
+      else tracks.delete(track);
     }
   }
 
-  async function acquireAndPublish() {
-    diagnose('capture-request', true, true);
+  async function acquireAndPublish(audio: boolean, video: boolean) {
+    let acquired: LocalTrack[] = [];
+    let failed = false;
+    diagnose('capture-request', audio, video);
     try {
-      tracks = await participant.createTracks({ audio: true, video: true });
-      if (disposed) { stop(); return false; }
-      diagnose('capture-ready', tracks.some(track => track.kind === 'audio'), tracks.some(track => track.kind === 'video'));
-      await Promise.all(tracks.map(async track => {
+      acquired = await participant.createTracks({ audio, video });
+      for (const track of acquired) tracks.add(track);
+      if (disposed) { stop(acquired); return false; }
+      diagnose('capture-ready', acquired.some(track => track.kind === 'audio'), acquired.some(track => track.kind === 'video'));
+      await Promise.all(acquired.map(async track => {
         if (disposed) return;
         publishing.add(track);
         await participant.publishTrack(track);
-        if (disposed) await release(track);
+        if (disposed || failed) await release(track);
       }));
       return !disposed;
     } catch (error) {
-      disposed = true;
-      stop();
+      failed = true;
+      stop(acquired);
       diagnose('capture-error', false, false, captureErrorName(error));
       throw error;
     }
   }
 
   return {
+    get active() { return !disposed; },
     start() {
       if (disposed) return Promise.resolve(false);
-      return starting ??= acquireAndPublish();
+      return starting ??= acquireAndPublish(true, true);
+    },
+    enable(kind: 'mic' | 'camera', previous?: LocalTrack) {
+      if (disposed) return Promise.resolve(false);
+      const pending = enabling.get(kind);
+      if (pending) return pending;
+      const request = (async () => {
+        if (previous) {
+          previous.stop();
+          await release(previous);
+          if (disposed) return false;
+        }
+        return acquireAndPublish(kind === 'mic', kind === 'camera');
+      })();
+      enabling.set(kind, request);
+      const finish = () => { if (enabling.get(kind) === request) enabling.delete(kind); };
+      void request.then(finish, finish);
+      return request;
     },
     dispose() { disposed = true; stop(); },
   };

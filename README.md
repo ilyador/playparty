@@ -1,6 +1,6 @@
 # Playparty
 
-A movie and a video call for the Plex owner and up to four friends. Guests open one URL, enter their name, and join. The owner picks what plays; playback stays synchronized and everyone chooses their own subtitles.
+A movie and a video call for the Plex owner and friends. Guests open one URL, enter their name, and join. The owner picks what plays; playback stays synchronized and everyone chooses their own subtitles.
 
 Remote streams adjust to the connection. Local playback keeps the highest compatible quality, and your other Plex apps keep their existing settings.
 
@@ -40,6 +40,6 @@ Forward these router ports to the server and allow them in its firewall:
 - **7882/UDP** for camera and microphone media.
 - **7881/TCP** for call fallback when UDP is unavailable.
 
-Caddy may also need **80/TCP** for certificates and redirects. Restart Playparty after setting up the forwards, then send friends your HTTPS URL. Anyone with the URL can join an available guest seat; only the owner can choose and control the movie.
+Caddy may also need **80/TCP** for certificates and redirects. Restart Playparty after setting up the forwards, then send friends your HTTPS URL. Anyone with the URL can join; only the owner can choose and control the movie.
 
 [Setup details, settings, updates, and troubleshooting](docs/setup.md)

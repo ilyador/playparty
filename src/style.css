@@ -69,7 +69,7 @@ input::placeholder { color: #9298a1; opacity: 1; }
 .call-stage.participants-2 .face { align-self: center; max-height: 100%; aspect-ratio: 4/3; }
 .call-stage.participants-3, .call-stage.participants-4 { grid-template-rows: repeat(2, minmax(0, 1fr)); }
 .call-stage.participants-3 .face:first-child { grid-row: span 2; }
-.call-stage.participants-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+.call-stage.participants-many { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); }
 .waiting { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 0; padding: 30px 30px 120px; }
 .waiting-icon { margin-bottom: 27px; color: #949ba4; }
 .waiting h1 { font-size: clamp(25px, 3vw, 38px); font-weight: 480; line-height: 1.2; letter-spacing: -.035em; margin: 0 0 13px; }
@@ -210,7 +210,7 @@ input::placeholder { color: #9298a1; opacity: 1; }
   .call-stage.participants-2 { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   .call-stage.participants-2 .face { height: 100%; aspect-ratio: auto; }
   .call-stage.participants-3 .face:first-child { grid-row: auto; grid-column: span 2; }
-  .call-stage.participants-5 { grid-template-columns: repeat(2,minmax(0,1fr)); grid-template-rows: repeat(3,minmax(0,1fr)); }
+  .call-stage.participants-many { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .waiting { padding: 25px 20px 140px; }
   .waiting h1 { font-size: 25px; }
   .waiting p { font-size: 13px; max-width: 245px; }

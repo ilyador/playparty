@@ -43,15 +43,15 @@ export default function Library({ onClose, onSelected }: { onClose: () => void; 
   }
   const shown = parent ? items : filter === 'continue' && !query ? continueWatching : items.filter(item => ['all', 'continue'].includes(filter) || item.type === filter || (filter === 'show' && item.type === 'episode'));
   const rows = Boolean(parent) && shown.length > 0 && shown.every(item => item.type === 'episode');
-  return <dialog ref={dialog} className="library" onCancel={onClose} onClick={event => { if (event.target === dialog.current) onClose(); }}>
+  return <dialog ref={dialog} className="library" aria-labelledby="library-title" onCancel={onClose} onClick={event => { if (event.target === dialog.current) onClose(); }}>
     <section className="library-content">
       <header className="library-heading">
         <div className="library-title">{parent && <button className="icon-button" onClick={() => setHistory(history.slice(0, -1))} aria-label="Back to library"><ArrowLeft size={21} /></button>}
-          <h2>{parent?.title || 'What are we watching?'}</h2></div>
+          <h2 id="library-title">{parent?.title || 'What are we watching?'}</h2></div>
         <button className="icon-button" onClick={onClose} aria-label="Close movie picker"><X size={22} /></button>
       </header>
       {!parent && <div className="library-tools">
-        <div className="library-filters" aria-label="Content type">{([...(continueWatching.length || filter === 'continue' ? ['continue'] as const : []), 'all', 'movie', 'show'] as const).map(value => <button key={value} className={filter === value ? 'selected' : ''} onClick={() => { filterTouched.current = true; setFilter(value); }}>{value === 'continue' ? 'Continue' : value === 'all' ? 'All' : value === 'movie' ? 'Movies' : 'Shows'}</button>)}</div>
+        <div className="library-filters" aria-label="Content type">{([...(continueWatching.length || filter === 'continue' ? ['continue'] as const : []), 'all', 'movie', 'show'] as const).map(value => <button key={value} className={filter === value ? 'selected' : ''} aria-pressed={filter === value} onClick={() => { filterTouched.current = true; setFilter(value); }}>{value === 'continue' ? 'Continue' : value === 'all' ? 'All' : value === 'movie' ? 'Movies' : 'Shows'}</button>)}</div>
         <label className="search"><MagnifyingGlass size={19} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Search your library" aria-label="Search your Plex library" /></label>
       </div>}
       <div className="library-scroll">

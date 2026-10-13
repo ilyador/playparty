@@ -11,7 +11,6 @@ export class Plex {
     const prefs = preferences && fs.existsSync(preferences) ? xml.parse(fs.readFileSync(preferences, 'utf8')).Preferences : {};
     this.token = token || prefs?.PlexOnlineToken;
     this.ownerEmail = (ownerEmail || prefs?.PlexOnlineMail)?.trim().toLowerCase();
-    this.ownerName = prefs?.PlexOnlineUsername || 'Host';
     this.resources = new Map();
     this.streams = new Map();
     if (!this.token) throw new Error('Plex credentials are unavailable. Set PLEX_PREFERENCES or PLEX_TOKEN.');
@@ -50,7 +49,6 @@ export class Plex {
       year: item.year,
       type: item.type,
       duration: (Number(item.duration) || 0) / 1000,
-      summary: item.summary || '',
       episodeTitle: item.type === 'episode' ? `${item.grandparentTitle} · S${item.parentIndex} E${item.index}` : undefined,
       seriesTitle: item.type === 'episode' ? item.grandparentTitle : undefined,
       episodeNumber: item.type === 'episode' ? `S${item.parentIndex} E${item.index}` : undefined,
@@ -58,7 +56,6 @@ export class Plex {
       resumePosition: Math.max(0, Number(item.viewOffset) || 0) / 1000,
       lastPlayedAt: Number(item.lastViewedAt) || 0,
       subtitles: this.subtitleTracks(item),
-      resolution: item.Media?.[0]?.videoResolution,
       hasPoster: Boolean(item.thumb || item.parentThumb || item.grandparentThumb),
     };
   }
@@ -219,7 +216,6 @@ export class Plex {
         url: this.addResource(stream, start.toString()),
         offset: 0,
         quality: video?.decision === 'copy' ? 'Original video' : 'Optimized video',
-        resolution: chosen?.videoResolution || movie.resolution || '',
         kind: 'hls',
         subtitleMode: subtitle ? subtitle.burn ? 'burn' : 'segmented' : 'none',
       };

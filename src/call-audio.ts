@@ -51,20 +51,6 @@ export function observeMicrophone(track: LocalAudioTrack, onChange: (sample: Mic
   };
 }
 
-export async function toggleMicrophone(track: LocalAudioTrack | undefined, enabled: boolean, setEnabled: (enabled: boolean) => Promise<unknown>) {
-  if (microphoneInterrupted(track)) {
-    // A publication can remain enabled after iOS stops the native track. Make
-    // this tap a recovery attempt instead of muting an already silent device.
-    if (track?.mediaStreamTrack.readyState === 'ended') {
-      await setEnabled(false);
-      await setEnabled(true);
-    } else {
-      await track?.restartTrack();
-      await setEnabled(true);
-    }
-  } else await setEnabled(!enabled);
-}
-
 export type CallAudioDiagnostic = {
   event: 'call-audio-output';
   callAudioTracks: number;

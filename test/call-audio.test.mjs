@@ -10,7 +10,7 @@ const code = ts.transpileModule(fs.readFileSync(new URL('../src/call-audio.ts', 
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 vm.runInNewContext(code, { exports });
-const { microphoneStatus, microphoneInterrupted, observeMicrophone, toggleMicrophone, remoteCallAudio } = exports;
+const { microphoneStatus, microphoneInterrupted, observeMicrophone, remoteCallAudio } = exports;
 
 function nativeTrack() {
   const track = new EventTarget();
@@ -57,38 +57,6 @@ test('native interruption updates immediately and observer follows the replaceme
   stop();
   track.mediaStreamTrack.dispatchEvent(new Event('mute')); track.emit('ended');
   assert.equal(samples.length, count);
-});
-
-test('ordinary microphone mute retains capture, while a stopped microphone tap recovers it', async () => {
-  const track = microphone(), changes = [];
-  const setEnabled = async enabled => {
-    changes.push(enabled);
-    if (enabled && track.mediaStreamTrack.readyState === 'ended') await track.restartTrack();
-    track.isMuted = !enabled; track.mediaStreamTrack.enabled = enabled;
-  };
-  const original = track.mediaStreamTrack;
-  await toggleMicrophone(track, true, setEnabled);
-  assert.equal(original.enabled, false);
-  assert.equal(original.readyState, 'live');
-  assert.equal(track.restarts, 0);
-  await toggleMicrophone(track, false, setEnabled);
-  assert.equal(original.enabled, true);
-  assert.equal(track.restarts, 0);
-  original.readyState = 'ended';
-  await toggleMicrophone(track, true, setEnabled);
-  assert.deepEqual(changes, [false, true, false, true]);
-  assert.equal(track.restarts, 1);
-  assert.equal(track.mediaStreamTrack.enabled, true);
-  assert.equal(track.mediaStreamTrack.readyState, 'live');
-});
-
-test('a browser-muted microphone tap restarts its track rather than toggling it off', async () => {
-  const track = microphone(), changes = [];
-  track.mediaStreamTrack.muted = true;
-  await toggleMicrophone(track, true, async enabled => { changes.push(enabled); });
-  assert.equal(track.restarts, 1);
-  assert.equal(track.mediaStreamTrack.muted, false);
-  assert.deepEqual(changes, [true]);
 });
 
 function remoteAudioTrack(sid, children, source = 'microphone') {

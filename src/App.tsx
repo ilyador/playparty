@@ -6,7 +6,7 @@ import Library from './Library';
 import Player from './Player';
 import { callCapture, captureErrorName } from './call-capture';
 import { createMovieElement } from './movie-element';
-import { microphoneInterrupted, microphoneStatus, observeMicrophone, remoteCallAudio, toggleMicrophone, type MicrophoneDiagnostic } from './call-audio';
+import { microphoneInterrupted, microphoneStatus, observeMicrophone, remoteCallAudio, type MicrophoneDiagnostic } from './call-audio';
 import { api, contentTitle, post, type Joined, type PartyState } from './types';
 
 export default function App() {
@@ -28,6 +28,7 @@ export default function App() {
   const [mic, setMic] = useState(false);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [camera, setCamera] = useState(false);
+  const [devicesReady, setDevicesReady] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [connection, setConnection] = useState('Connecting');
   const [clockOffset, setClockOffset] = useState(0);
@@ -35,7 +36,7 @@ export default function App() {
   const [fullscreen, setFullscreen] = useState(false);
   const call = useRef<Room | null>(null);
   const captureSession = useRef<ReturnType<typeof callCapture> | null>(null);
-  const togglingDevice = useRef(false);
+  const togglingDevice = useRef<Room | null>(null);
   const socket = useRef<WebSocket | null>(null);
   const leaveRef = useRef(false);
   const movieElement = useRef<HTMLVideoElement | null>(null);
@@ -74,9 +75,10 @@ export default function App() {
     let pingTimer: ReturnType<typeof setInterval> | undefined;
     const pendingDiagnostics = new Map<string, object>();
     leaveRef.current = false;
+    setDevicesReady(false);
     setAudioBlocked(false);
     const connectEvents = () => {
-      if (disposed) return;
+      if (disposed || leaveRef.current) return;
       const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/events`);
       socket.current = ws;
       ws.onopen = () => {
@@ -95,8 +97,9 @@ export default function App() {
         if (message.type === 'pong') setClockOffset(message.serverTime - (Date.now() + message.sent) / 2);
       };
       ws.onclose = () => {
+        if (disposed || leaveRef.current || socket.current !== ws) return;
         clearInterval(pingTimer);
-        if (!disposed && !leaveRef.current) reconnect = setTimeout(connectEvents, 1500);
+        reconnect = setTimeout(connectEvents, 1500);
       };
     };
     connectEvents();
@@ -132,7 +135,7 @@ export default function App() {
     captureSession.current = capture;
     call.current = room;
     const refresh = () => {
-      if (disposed) return;
+      if (disposed || leaveRef.current) return;
       setParticipants([room.localParticipant, ...room.remoteParticipants.values()]);
       const microphone = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.audioTrack;
       if (microphone !== monitoredMicrophone || !microphoneReported) {
@@ -160,17 +163,23 @@ export default function App() {
       setNotice(room.localParticipant.lastMicrophoneError ? 'Your microphone could not start. Tap the mic button to try again.' : 'Your camera could not start. Tap the camera button to try again.');
     });
     for (const event of [RoomEvent.ParticipantConnected, RoomEvent.ParticipantDisconnected, RoomEvent.LocalTrackPublished, RoomEvent.LocalTrackUnpublished, RoomEvent.TrackMuted, RoomEvent.TrackUnmuted]) room.on(event, refresh);
-    room.on(RoomEvent.Reconnecting, () => setConnection('Reconnecting'));
-    room.on(RoomEvent.Reconnected, () => setConnection('Connected'));
-    room.on(RoomEvent.Disconnected, () => { if (!disposed) setConnection('Disconnected'); });
+    room.on(RoomEvent.Reconnecting, () => { if (!disposed && !leaveRef.current) setConnection('Reconnecting'); });
+    room.on(RoomEvent.Reconnected, () => { if (!disposed && !leaveRef.current) setConnection('Connected'); });
+    room.on(RoomEvent.Disconnected, () => {
+      capture.dispose();
+      if (!disposed && !leaveRef.current) { setDevicesReady(false); setSpeaking(false); setConnection('Disconnected'); }
+    });
     room.connect(joined.livekitUrl, joined.token).then(async () => {
       if (disposed || leaveRef.current) return;
       setConnection('Connected'); refresh();
       await capture.start().catch(() => {
         if (!disposed && !leaveRef.current) setNotice(room.localParticipant.lastMicrophoneError ? 'Your microphone could not start. Tap the mic button to try again.' : 'Use the camera and mic buttons to enable your devices.');
       });
-      if (!disposed && !leaveRef.current) { await room.startAudio().catch(() => {}); refresh(); }
-    }).catch(() => { if (!disposed) { setConnection('Disconnected'); setNotice('The call could not connect. Check your connection and rejoin.'); } });
+      if (!disposed && !leaveRef.current && capture.active) {
+        setDevicesReady(true);
+        await room.startAudio().catch(() => {}); refresh();
+      }
+    }).catch(() => { if (!disposed && !leaveRef.current) { setConnection('Disconnected'); setNotice('The call could not connect. Check your connection and rejoin.'); } });
     return () => {
       disposed = true; clearTimeout(reconnect); clearInterval(pingTimer); socket.current?.close();
       capture.dispose();
@@ -200,6 +209,7 @@ export default function App() {
   }
   async function leave() {
     leaveRef.current = true;
+    setDevicesReady(false);
     captureSession.current?.dispose();
     if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
     setFullscreen(false);
@@ -214,20 +224,34 @@ export default function App() {
     setState(next); setPicker(true);
   }
   async function toggleDevice(kind: 'mic' | 'camera') {
-    const participant = call.current?.localParticipant;
-    if (!participant || togglingDevice.current || leaveRef.current) return;
-    togglingDevice.current = true;
+    const room = call.current;
+    const capture = captureSession.current;
+    if (!room || !capture?.active || !devicesReady || togglingDevice.current === room || leaveRef.current) return;
+    const participant = room.localParticipant;
+    const currentSession = () => call.current === room && captureSession.current === capture && capture.active && !leaveRef.current;
+    togglingDevice.current = room;
     try {
       if (kind === 'mic') {
-        await toggleMicrophone(participant.getTrackPublication(Track.Source.Microphone)?.audioTrack, participant.isMicrophoneEnabled, enabled => participant.setMicrophoneEnabled(enabled));
+        const microphone = participant.getTrackPublication(Track.Source.Microphone)?.audioTrack;
+        const enabled = microphoneInterrupted(microphone) || !participant.isMicrophoneEnabled;
+        if (enabled && (!microphone || microphone.mediaStreamTrack.readyState === 'ended' || microphone.mediaStreamTrack.muted)) await capture.enable('mic', microphone);
+        else await participant.setMicrophoneEnabled(enabled);
+        if (!currentSession()) return;
         const sample = microphoneStatus(participant.getTrackPublication(Track.Source.Microphone)?.audioTrack);
         setMic(Boolean(sample.microphonePublished && sample.microphoneReadyState === 'live' && sample.microphoneEnabled && !sample.microphoneMuted && !sample.microphoneUserMuted));
         if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'telemetry', ...sample }));
       }
-      else { await participant.setCameraEnabled(!participant.isCameraEnabled); setCamera(participant.isCameraEnabled); }
+      else {
+        const enabled = !participant.isCameraEnabled;
+        const camera = participant.getTrackPublication(Track.Source.Camera)?.videoTrack;
+        if (enabled && (!camera || camera.mediaStreamTrack.readyState === 'ended' || camera.mediaStreamTrack.muted)) await capture.enable('camera', camera);
+        else await participant.setCameraEnabled(enabled);
+        if (!currentSession()) return;
+        setCamera(participant.isCameraEnabled);
+      }
       setNotice(''); setParticipants(previous => [...previous]);
-    } catch { if (!leaveRef.current) setNotice(`Your ${kind === 'mic' ? 'microphone' : 'camera'} could not start. Tap its button to try again.`); }
-    finally { togglingDevice.current = false; }
+    } catch { if (currentSession()) setNotice(`Your ${kind === 'mic' ? 'microphone' : 'camera'} could not start. Tap its button to try again.`); }
+    finally { if (togglingDevice.current === room) togglingDevice.current = null; }
   }
   const remote = participants.filter(participant => participant.identity !== joined?.identity);
   const local = participants.find(participant => participant.identity === joined?.identity);
@@ -254,7 +278,7 @@ export default function App() {
     </section> : <>
       <section className={`stage${watching ? ' has-movie' : ''}`}>
         {watching && state && movieElement.current ? <div className="movie-stage"><Player key={state.movie?.id} mediaElement={movieElement.current} state={state} owner={joined.owner} speaking={speaking} clockOffset={clockOffset} connectionVersion={connectionVersion} fullscreen={fullscreen} onFullscreen={setFullscreen} onStop={stopMovie} onReady={version => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'ready', mediaVersion: version })); }} onBuffering={version => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'buffering', mediaVersion: version })); }} onTelemetry={sample => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'telemetry', ...sample })); }} /></div>
-          : <div className={`call-stage participants-${Math.min(ordered.length, 5)}`}>
+          : <div className={`call-stage participants-${ordered.length < 5 ? ordered.length : 'many'}`}>
             {remote.length === 0 && <div className="waiting"><span className="waiting-icon"><VideoCamera size={32} weight="light" /></span><h1>Room for good company.</h1><p>{joined.owner ? 'Send the link. Your friends will join you here.' : state?.hostPresent ? 'You’re in. The host will pick something to watch.' : 'You’re in. Waiting for the host.'}</p>{joined.owner && <button className="secondary-button" onClick={() => setPicker(true)}><FilmSlate size={19} />Choose something to watch</button>}</div>}
             {ordered.map(participant => <Face key={participant.identity} participant={participant} local={participant.identity === joined.identity} large={remote.length > 0} />)}
           </div>}
@@ -264,8 +288,8 @@ export default function App() {
         <div className="footer-content">{watching && state?.movie ? <><strong>{contentTitle(state.movie)}</strong><span>{state.movie.episodeDetails || state.movie.year}{state.paused && !state.waiting ? ' · Paused' : ''}</span></> : <><strong>{joined.name}</strong><span>{joined.owner ? 'You’re hosting' : 'Just you and your people'}</span></>}</div>
         <div className="call-controls">
           <div className="call-device-controls">
-          <button className={`call-button${!mic ? ' device-off' : ''}`} onClick={() => toggleDevice('mic')} aria-label={mic ? 'Mute microphone' : 'Turn on microphone'} aria-pressed={mic}>{mic ? <Microphone size={23} /> : <MicrophoneSlash size={23} />}</button>
-          <button className={`call-button${!camera ? ' device-off' : ''}`} onClick={() => toggleDevice('camera')} aria-label={camera ? 'Turn off camera' : 'Turn on camera'} aria-pressed={camera}>{camera ? <VideoCamera size={23} /> : <VideoCameraSlash size={23} />}</button>
+          <button className={`call-button${!mic ? ' device-off' : ''}`} disabled={!devicesReady} onClick={() => toggleDevice('mic')} aria-label={mic ? 'Mute microphone' : 'Turn on microphone'} aria-pressed={mic}>{mic ? <Microphone size={23} /> : <MicrophoneSlash size={23} />}</button>
+          <button className={`call-button${!camera ? ' device-off' : ''}`} disabled={!devicesReady} onClick={() => toggleDevice('camera')} aria-label={camera ? 'Turn off camera' : 'Turn on camera'} aria-pressed={camera}>{camera ? <VideoCamera size={23} /> : <VideoCameraSlash size={23} />}</button>
           </div>
           <span className="controls-divider" />
           <button className="call-button hangup" onClick={leave} aria-label="Leave the call"><PhoneDisconnect size={25} weight="fill" /></button>

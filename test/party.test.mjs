@@ -2,14 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Party } from '../server/party.mjs';
 
-test('four guests cannot occupy the owner’s seat or become the host', () => {
+test('guests can join before and after the owner without gaining host authority', () => {
   const party = new Party();
-  for (let i = 0; i < 4; i++) party.join(i === 0 ? 'owner' : `Guest ${i}`, false, `guest-${i}`);
-  assert.throws(() => party.join('Fifth guest', false), { status: 409 });
+  for (let i = 0; i < 6; i++) party.join(i === 0 ? 'owner' : `Guest ${i}`, false, `guest-${i}`);
   const host = party.join('Plex owner', true);
+  for (let i = 6; i < 12; i++) party.join(`Guest ${i}`, false, `guest-${i}`);
   assert.equal(host.id, 'owner');
+  assert.equal(host.owner, true);
   assert.equal(party.members.get('guest-0').owner, false);
-  assert.equal(party.members.size, 5);
+  assert.equal(party.members.size, 13);
 });
 
 test('playback starts on a shared future clock only after current-version readiness', () => {
@@ -31,7 +32,7 @@ test('playback starts on a shared future clock only after current-version readin
   now += 5000;
   assert.equal(party.currentPosition(), 2);
   party.control('seek', 900);
-  assert.equal(party.currentPosition(), 120);
+  assert.equal(party.currentPosition(), 119);
   assert.equal(party.paused, true);
 });
 

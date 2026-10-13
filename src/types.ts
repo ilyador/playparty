@@ -4,8 +4,6 @@ export type Content = {
   type: 'movie' | 'show' | 'season' | 'episode';
   year?: number;
   duration: number;
-  summary: string;
-  resolution?: string;
   hasPoster: boolean;
   episodeTitle?: string;
   seriesTitle?: string;
@@ -23,6 +21,7 @@ export type PartyState = {
   paused: boolean;
   updatedAt: number;
   mediaVersion: number;
+  readinessVersion: number;
   waiting: boolean;
   hostPresent: boolean;
   participants: Member[];

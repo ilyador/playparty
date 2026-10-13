@@ -150,7 +150,13 @@ try {
     video.pause();
     let blocked = false;
     video.play = () => {
-      if (!blocked) { blocked = true; return Promise.reject(new DOMException('Autoplay blocked', 'NotAllowedError')); }
+      if (!blocked) {
+        blocked = true;
+        // Deliver a previously queued playing event after the rejection's
+        // catch handler, while the buffering broadcast is still in flight.
+        queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => video.dispatchEvent(new Event('playing')))));
+        return Promise.reject(new DOMException('Autoplay blocked', 'NotAllowedError'));
+      }
       return video.testNativePlay();
     };
   });

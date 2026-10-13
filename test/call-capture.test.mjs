@@ -143,3 +143,72 @@ test('pending Safari permission queries cannot hide capture diagnostics', async 
   assert.deepEqual(samples.map(sample => sample.event), ['capture-request', 'capture-ready']);
   capture.dispose();
 });
+
+test('failed camera retry releases its own device and preserves an enabled microphone', async () => {
+  const microphone = track('audio'), camera = track('video'), published = new Set();
+  let attempts = 0;
+  const capture = controller({
+    createTracks: async options => {
+      if (++attempts === 1) throw new Error('Initial permission denied');
+      return options.audio ? [microphone] : [camera];
+    },
+    publishTrack: async track => { if (track === camera) throw new Error('Camera publication failed'); published.add(track); },
+    unpublishTrack: async track => { published.delete(track); },
+  });
+  await assert.rejects(capture.start(), /Initial permission denied/);
+  assert.equal(capture.active, true, 'A denied initial request must permit device retries.');
+  assert.equal(await capture.enable('mic'), true);
+  await assert.rejects(capture.enable('camera'), /Camera publication failed/);
+  await flush();
+  assert.equal(microphone.readyState, 'live');
+  assert.equal(camera.readyState, 'ended');
+  assert.deepEqual([...published], [microphone]);
+  capture.dispose(); await flush();
+  assert.equal(microphone.readyState, 'ended');
+  assert.equal(published.size, 0);
+});
+
+test('pending microphone and camera retries share requests and stop without publishing after leave', async () => {
+  for (const kind of ['mic', 'camera']) {
+    const consent = deferred(), device = track(kind === 'mic' ? 'audio' : 'video');
+    let requests = 0, publications = 0;
+    const capture = controller({
+      createTracks: () => { requests++; return consent.promise; },
+      publishTrack: async () => { publications++; },
+      unpublishTrack: async () => {},
+    });
+    const pending = capture.enable(kind);
+    assert.equal(capture.enable(kind), pending);
+    capture.dispose(); consent.resolve([device]);
+    assert.equal(await pending, false);
+    assert.equal(requests, 1);
+    assert.equal(publications, 0);
+    assert.equal(device.readyState, 'ended');
+    assert.equal(capture.active, false);
+    assert.equal(await capture.enable(kind), false);
+    assert.equal(requests, 1);
+  }
+});
+
+test('leaving before SDK publication is registered still removes a publication that finishes late', async () => {
+  const beforeRegistration = deferred(), publication = deferred(), device = track('audio');
+  let pending, published = false, unpublishes = 0;
+  const capture = controller({
+    createTracks: async () => [device],
+    publishTrack: async () => {
+      // LiveKit first awaits reconnect/republish state, then registers its
+      // pending publication promise. An earlier unpublish cannot wait for it.
+      await beforeRegistration.promise;
+      pending = publication.promise;
+      await pending; published = true;
+    },
+    unpublishTrack: async () => { unpublishes++; await pending; published = false; },
+  });
+  const started = capture.start(); await flush();
+  capture.dispose(); await flush();
+  beforeRegistration.resolve(); await flush(); publication.resolve();
+  assert.equal(await started, false);
+  assert.equal(published, false);
+  assert.equal(device.readyState, 'ended');
+  assert.equal(unpublishes, 2, 'An early completed unpublish must not suppress post-publication cleanup.');
+});

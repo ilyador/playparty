@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-13T16:15:17.682Z",
+  "generatedAt": "2026-10-13T17:10:40.443Z",
   "title": "Design System: Playparty",
   "extensions": {
     "colorMeta": {
@@ -232,7 +232,7 @@
       "name": "Call Device Button",
       "kind": "button",
       "refersTo": "button-call",
-      "description": "Microphone or camera action: 50px on ordinary desktop, 40px in desktop fullscreen, 46px in portrait, and 44px stacked at the upper right in phone landscape. Lighter graphite marks an off or interrupted device; microphone state follows the native track.",
+      "description": "Microphone or camera action: disabled until initial connection and capture settle; 50px on ordinary desktop, 40px in desktop fullscreen, 46px in portrait, and 44px stacked at the upper right in phone landscape. Lighter graphite marks an off or interrupted device; microphone state follows the native track.",
       "html": "<button class=\"ds-call\" aria-label=\"Mute microphone\" aria-pressed=\"true\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"23\" height=\"23\" fill=\"currentColor\" viewBox=\"0 0 256 256\" aria-hidden=\"true\"><path d=\"M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V240a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z\"></path></svg></button>",
       "css": ".ds-call{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;cursor:pointer;border:0;transition:background-color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),color 160ms var(--ease,cubic-bezier(.23,1,.32,1)),transform 120ms var(--ease,cubic-bezier(.23,1,.32,1));width:50px;height:50px;display:grid;place-items:center;border-radius:12px;background:var(--raised,#25282d);color:#eeefec;}.ds-call:focus-visible{outline:2px solid #eeefec;outline-offset:4px}.ds-call:active:not(:disabled){transform:scale(.97)}.ds-call:disabled{cursor:default;opacity:.45}@media(hover:hover) and (pointer:fine){.ds-call:hover:not(:disabled){background:#383d44;}}@media(prefers-reduced-motion:reduce){.ds-call{transition-duration:.01ms}}.ds-call.ds-device-off{color:#c4c9d0;background:#363a40}@media(max-width:600px){.ds-call{width:46px;height:46px;border-radius:10px}}@media(orientation:landscape) and (max-height:600px) and (max-width:1100px){.ds-call{width:44px;height:44px;border-radius:9px;background:rgba(37,40,45,.9)}}"
     },
@@ -284,7 +284,7 @@
     {
       "name": "Camera Placeholder",
       "kind": "card",
-      "description": "Camera-off tile with initials and a gradient name caption. Ordinary desktop uses a side rail; desktop fullscreen stacks 16:10 tiles at the upper right, up to 237px wide and scaled to fit five people. Portrait uses a strip; phone landscape keeps small horizontal tiles at the lower left. This is a documentation specimen.",
+      "description": "Camera-off tile with initials and a gradient name caption. Ordinary desktop uses a side rail; desktop fullscreen stacks 16:10 tiles at the upper right, up to 237px wide and scaled to the current participant count. Portrait uses a strip; phone landscape keeps small horizontal tiles at the lower left. Larger lobby calls add grid rows in three desktop or two phone columns. There is no fixed participant limit. This is a documentation specimen.",
       "html": "<div class=\"ds-face\"><div class=\"ds-face-placeholder\"><span class=\"ds-initials\">G</span></div><div class=\"ds-face-caption\"><span>Guest</span></div></div>",
       "css": ".ds-face{font-family:'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;position:relative;width:208px;aspect-ratio:16/10;min-width:0;min-height:0;border-radius:12px;overflow:hidden;background:#21242a}.ds-face-placeholder{position:absolute;inset:0;display:grid;place-items:center;background:#22252b}.ds-initials{font-size:21px;font-weight:480;letter-spacing:-.04em;color:#bac1cb;width:54px;height:54px;display:grid;place-items:center;border-radius:50%;background:#30343c}.ds-face-caption{position:absolute;inset:auto 0 0;display:flex;justify-content:space-between;align-items:center;padding:28px 13px 11px;background:linear-gradient(transparent,rgba(0,0,0,.68));font-size:12px;color:#f0f1ec;gap:12px}.ds-face-caption>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:600px){.ds-face{width:140px}.ds-initials{width:40px;height:40px;font-size:17px}.ds-face-caption{padding:25px 9px 9px;font-size:11px}}@media(orientation:landscape) and (max-height:600px) and (max-width:1100px){.ds-face{width:102.4px;height:64px;aspect-ratio:16/10;border-radius:9px}.ds-face-caption{font-size:10px;padding:18px 8px 6px;gap:6px}.ds-initials{width:28px;height:28px;font-size:12px}}"
     }

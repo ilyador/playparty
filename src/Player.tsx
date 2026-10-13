@@ -8,7 +8,7 @@ import { syncRate } from './sync-rate';
 import { seekWatchdog } from './seek-watchdog';
 import { createAdaptiveQuality, type QualityReason } from './adaptive-quality';
 
-type Playback = { url: string; offset: number; quality: string; resolution: string; mediaVersion: number; subtitleMode: 'none' | 'segmented' | 'burn'; remote: boolean; maxBitrate: number; currentBitrate: number };
+type Playback = { url: string; offset: number; quality: string; mediaVersion: number; subtitleMode: 'none' | 'segmented' | 'burn'; remote: boolean; maxBitrate: number; currentBitrate: number };
 const time = (value: number) => {
   const seconds = Math.max(0, Math.floor(value || 0));
   return seconds >= 3600 ? `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
@@ -62,7 +62,7 @@ export default function Player({ mediaElement, state, owner, speaking, clockOffs
 
   useLayoutEffect(() => {
     container.current?.prepend(mediaElement);
-    const ended = () => { if (owner) post('control', { action: 'pause' }).catch(() => {}); };
+    const ended = () => { if (owner && mediaElement.ended && playback.current?.mediaVersion === stateRef.current.mediaVersion) post('control', { action: 'pause', position: stateRef.current.movie?.duration }).catch(() => {}); };
     mediaElement.addEventListener('ended', ended);
     return () => { mediaElement.removeEventListener('ended', ended); mediaElement.remove(); };
   }, [mediaElement, owner]);
@@ -166,9 +166,11 @@ export default function Player({ mediaElement, state, owner, speaking, clockOffs
     if (!element || !state.movie) return;
     const abort = new AbortController();
     let hls: Hls | undefined;
+    let mediaRecoveries = 0;
     let nativeSubtitles: (() => void) | undefined;
     let readySent = false;
     let wasWaiting = false;
+    let readyVersion = state.readinessVersion;
     let readyConnection = connectionRef.current;
     sourceGeneration.current += 1;
     seekHealth.current.reset();
@@ -176,20 +178,23 @@ export default function Player({ mediaElement, state, owner, speaking, clockOffs
     pendingPlay.current = null;
     playback.current = null;
     bufferingReported.current = false;
-    if (!stateRef.current.paused) {
+    if (!stateRef.current.paused || stateRef.current.waiting) {
       bufferingReported.current = true; report('waiting'); onBufferingRef.current(state.mediaVersion);
     }
     setError(''); setLoading(true); setGestureRequired(false);
     const mustWait = () => stateRef.current.paused || Date.now() + clockRef.current < stateRef.current.updatedAt;
-    const playing = () => { if (mustWait()) { element.pause(); return; } setLoading(false); setMediaPaused(false); setGestureRequired(false); bufferingReported.current = false; report('playing'); };
+    const playing = () => { if (mustWait()) { element.pause(); return; } if (element.paused || element.ended) return; setLoading(false); setMediaPaused(false); setGestureRequired(false); bufferingReported.current = false; report('playing'); };
     const progress = () => { if (mustWait()) { element.pause(); return; } if (!element.paused) { setMediaPaused(false); if (gestureRequired.current) setGestureRequired(false); } };
     const visibility = () => { if (mustWait()) element.pause(); };
     const waiting = () => { setLoading(true); holdForBuffer(); };
+    const fatal = () => { report('fatal'); setError('The movie could not load. Try again.'); setLoading(false); };
+    const nativeError = () => { if (!abort.signal.aborted && renderer.current === 'native' && element.error) fatal(); };
     element.addEventListener('playing', playing);
     element.addEventListener('play', progress);
     element.addEventListener('timeupdate', progress);
     document.addEventListener('visibilitychange', visibility);
     element.addEventListener('waiting', waiting);
+    element.addEventListener('error', nativeError);
     const markReady = () => {
       if (readyConnection !== connectionRef.current) {
         readyConnection = connectionRef.current; readySent = false; wasWaiting = false;
@@ -198,6 +203,9 @@ export default function Player({ mediaElement, state, owner, speaking, clockOffs
       if (element.readyState >= 3 && !element.seeking) setLoading(false);
       const current = stateRef.current;
       if (current.mediaVersion !== state.mediaVersion) return;
+      if (readyVersion !== current.readinessVersion) {
+        readyVersion = current.readinessVersion; readySent = false;
+      }
       if (!current.waiting) { wasWaiting = false; return; }
       if (!wasWaiting) { readySent = false; wasWaiting = true; }
       const target = Math.max(0, current.position - offsetRef.current);
@@ -243,8 +251,8 @@ export default function Player({ mediaElement, state, owner, speaking, clockOffs
         });
         hls.on(Hls.Events.ERROR, (_, data) => {
           if (!data.fatal || abort.signal.aborted) return;
-          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
-          else { report('fatal'); setError('The movie could not load. Try again.'); setLoading(false); }
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 2) { mediaRecoveries += 1; hls?.recoverMediaError(); }
+          else { hls?.stopLoad(); fatal(); }
         });
         hls.loadSource(result.url);
         hls.attachMedia(element);
@@ -257,7 +265,7 @@ export default function Player({ mediaElement, state, owner, speaking, clockOffs
         element.src = result.url;
       } else { setError('This browser cannot play this stream. Try Safari, Chrome or Edge.'); setLoading(false); }
     }).catch(error => { if (!abort.signal.aborted) { setError(error.message); setLoading(false); } });
-    return () => { sourceGeneration.current += 1; pendingPlay.current = null; abort.abort(); readyCheck.current = () => {}; element.pause(); hls?.destroy(); if (nativeSubtitles) element.textTracks.removeEventListener('addtrack', nativeSubtitles); element.removeEventListener('canplay', markReady); element.removeEventListener('playing', playing); element.removeEventListener('play', progress); element.removeEventListener('timeupdate', progress); document.removeEventListener('visibilitychange', visibility); element.removeEventListener('waiting', waiting); element.removeAttribute('src'); element.load(); };
+    return () => { sourceGeneration.current += 1; pendingPlay.current = null; abort.abort(); readyCheck.current = () => {}; element.pause(); hls?.destroy(); if (nativeSubtitles) element.textTracks.removeEventListener('addtrack', nativeSubtitles); element.removeEventListener('canplay', markReady); element.removeEventListener('playing', playing); element.removeEventListener('play', progress); element.removeEventListener('timeupdate', progress); document.removeEventListener('visibilitychange', visibility); element.removeEventListener('waiting', waiting); element.removeEventListener('error', nativeError); element.removeAttribute('src'); element.load(); };
   }, [state.movie?.id, state.mediaVersion, subtitleId, adaptiveCap, sourceRetry]);
 
   useEffect(() => {
@@ -278,6 +286,10 @@ export default function Player({ mediaElement, state, owner, speaking, clockOffs
       if (Date.now() - lastSample.current >= 10000) { lastSample.current = Date.now(); report('sample'); }
       readyCheck.current();
       if (!playback.current) return;
+      if (element.ended) {
+        if (!seeking.current) setPosition(element.currentTime + offsetRef.current);
+        return;
+      }
       const wantsPlayback = !current.paused || current.waiting;
       adaptive.current?.sample({ playing: wantsPlayback, seeking: element.seeking || seeking.current, bufferAhead: ahead(element, element.currentTime), stalled: wantsPlayback && element.readyState < 3 });
       const now = Date.now() + clockRef.current;
@@ -347,7 +359,7 @@ export default function Player({ mediaElement, state, owner, speaking, clockOffs
     {error && <div className="player-error" role="alert"><p>{error}</p><button className="secondary-button" onClick={() => { window.location.reload(); }}>Reconnect</button></div>}
     <div className="movie-topline"><div className="movie-title"><strong>{state.movie && contentTitle(state.movie)}</strong>{state.movie?.episodeDetails && <span>{state.movie.episodeDetails}</span>}</div><span className="quality-label">{quality}</span></div>
     <div className="movie-controls">
-      <input className="seek" aria-label="Movie position" type="range" min="0" max={duration} step="1" value={Math.min(position, duration)} disabled={!owner} onPointerDown={() => { seeking.current = true; }} onKeyDown={() => { seeking.current = true; }} onChange={event => setPosition(Number(event.target.value))} onPointerUp={event => { seeking.current = false; if (owner) control('seek', Number(event.currentTarget.value)); }} onPointerCancel={() => { seeking.current = false; }} onBlur={() => { seeking.current = false; }} onKeyUp={event => { seeking.current = false; if (owner && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) control('seek', Number(event.currentTarget.value)); }} style={{ '--progress': `${Math.min(100, position / duration * 100)}%` } as React.CSSProperties} />
+      <input className="seek" aria-label="Movie position" type="range" min="0" max={Math.max(0, duration - 1)} step="1" value={Math.min(position, duration)} disabled={!owner} onPointerDown={() => { seeking.current = true; }} onKeyDown={() => { seeking.current = true; }} onChange={event => setPosition(Number(event.target.value))} onPointerUp={event => { seeking.current = false; if (owner) control('seek', Number(event.currentTarget.value)); }} onPointerCancel={() => { seeking.current = false; }} onBlur={() => { seeking.current = false; }} onKeyUp={event => { seeking.current = false; if (owner && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) control('seek', Number(event.currentTarget.value)); }} style={{ '--progress': `${Math.min(100, position / duration * 100)}%` } as React.CSSProperties} />
       <div className="movie-control-row"><div className="movie-control-group">
         {owner && <button className="icon-button" aria-label={needsGesture && mediaPaused ? 'Start playback' : state.paused ? 'Play movie' : 'Pause movie'} onClick={() => { if (needsGesture && mediaPaused) playVideo(true); else { if (state.paused) createMovieElement(video.current); control(state.paused ? 'play' : 'pause'); } }}>{needsGesture && mediaPaused || state.paused ? <Play size={21} weight="fill" /> : <Pause size={21} weight="fill" />}</button>}
         {!owner && needsGesture && mediaPaused && <button className="icon-button" aria-label="Start playback" onClick={() => playVideo(true)}><Play size={21} weight="fill" /></button>}
