@@ -27,9 +27,30 @@ try {
   const ownerContext = await browser.newContext({ permissions: ['camera', 'microphone'] });
   const guestContext = await browser.newContext({ permissions: ['camera', 'microphone'] });
   for (const context of [ownerContext, guestContext]) await context.addInitScript(() => {
-    const Native = window.WebSocket;
+    const Native = window.WebSocket, NativePeer = window.RTCPeerConnection;
+    const getMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     window.testSockets = [];
-    window.WebSocket = class extends Native { constructor(...args) { super(...args); window.testSockets.push(this); } };
+    window.testPeers = []; window.testMediaRequests = []; window.testPlaybackReports = [];
+    navigator.mediaDevices.getUserMedia = constraints => { window.testMediaRequests.push(constraints); return getMedia(constraints); };
+    window.RTCPeerConnection = class extends NativePeer { constructor(...args) { super(...args); window.testPeers.push(this); } };
+    window.WebSocket = class extends Native {
+      constructor(...args) { super(...args); this.testDropStates = Boolean(window.testDropAllStates); window.testSockets.push(this); }
+      send(data) {
+        if (typeof data === 'string') { try { const message = JSON.parse(data); if (message.type === 'telemetry') window.testPlaybackReports.push(message); } catch {} }
+        return super.send(data);
+      }
+      get onmessage() { return this.testMessageHandler; }
+      set onmessage(handler) {
+        this.testMessageHandler = handler;
+        super.onmessage = event => {
+          let state = false;
+          if (typeof event.data === 'string') { try { state = JSON.parse(event.data).type === 'state'; } catch {} }
+          if (state && this.testDropStates) { this.testDroppedStates = (this.testDroppedStates || 0) + 1; return; }
+          if (state) this.testLastStateAt = Date.now();
+          handler?.call(this, event);
+        };
+      }
+    };
   });
   await ownerContext.addCookies([{ name: 'test_owner', value: testOwner, url: 'http://localhost:5176' }]);
   const owner = await ownerContext.newPage();
@@ -179,9 +200,108 @@ try {
   await guest.evaluate(() => { const v = document.querySelector('.movie-video'); delete v.paused; delete v.seeking; });
   for (const viewer of [owner, guest]) await viewer.waitForFunction(playing, undefined, { timeout: 60000 });
   assert.ok(events.filter(event => event.event === 'stream-start').length > streamsBeforeStall, 'A buffered seek that never lands must replace this viewer’s source.');
-  assert.ok(events.some(event => event.event === 'seek-recovery'));
+  assert.ok(await guest.evaluate(() => window.testPlaybackReports.some(sample => sample.event === 'seek-recovery')), 'Seek recovery must emit diagnostics even when the server rate-limits adjacent samples.');
   await assertSynchronized('Stuck seek recovery');
   console.log('A stuck seek held the clock and replaced only its failing viewer’s stream before synchronized playback resumed.');
+
+  for (const page of [owner, guest]) {
+    await page.waitForFunction(() => document.querySelectorAll('audio.call-audio').length === 1, undefined, { timeout: 15000 });
+    await page.evaluate(() => {
+      window.testCallPeers = window.testPeers.filter(peer => peer.connectionState === 'connected');
+      window.testCallPeerCount = window.testPeers.length; window.testCallCaptures = window.testMediaRequests.length;
+    });
+  }
+  const assertCallRetained = async label => {
+    for (const page of [owner, guest]) assert.deepEqual(await page.evaluate(() => ({
+      captures: window.testMediaRequests.length === window.testCallCaptures,
+      peers: window.testPeers.length === window.testCallPeerCount && window.testCallPeers.length > 0 && window.testCallPeers.every(peer => window.testPeers.includes(peer) && peer.connectionState === 'connected'),
+      outputs: document.querySelectorAll('audio.call-audio').length,
+    })), { captures: true, peers: true, outputs: 1 }, `${label}: playback recovery must retain the connected call without new capture or duplicate output.`);
+  };
+
+  // A decoder can keep reporting buffered data and seeking=false while its
+  // playback position is stuck. Ignore hard seeks until the watchdog replaces
+  // only this client's source, then release the native media engine.
+  // Use the other viewer so the earlier stuck-seek recovery's per-player
+  // thirty-second reload cooldown does not hide this independent fault.
+  const affected = owner, affectedId = 'owner';
+  await affected.waitForFunction(() => { const v = document.querySelector('.movie-video'); return v?.readyState === 4 && v.currentTime > 6 && [...Array(v.buffered.length).keys()].some(i => v.buffered.start(i) <= v.currentTime - 5 && v.buffered.end(i) - v.currentTime >= 6); });
+  const driftEventsAt = events.length;
+  let driftReloads = 0;
+  await affected.route('**/api/playback', async route => {
+    driftReloads++;
+    await affected.evaluate(() => {
+      const v = document.querySelector('.movie-video');
+      delete v.currentTime; delete v.paused; delete v.seeking;
+    });
+    await route.continue();
+  });
+  await affected.evaluate(() => {
+    const v = document.querySelector('.movie-video'), stuckAt = v.currentTime - 5;
+    v.pause();
+    window.testIgnoredCorrections = 0;
+    Object.defineProperty(v, 'currentTime', { configurable: true, get: () => stuckAt, set: () => { window.testIgnoredCorrections++; } });
+    Object.defineProperty(v, 'paused', { configurable: true, get: () => false });
+    Object.defineProperty(v, 'seeking', { configurable: true, get: () => false });
+  });
+  await affected.waitForRequest(request => request.url().endsWith('/api/playback'), { timeout: 20000 });
+  for (const page of [owner, guest]) await page.waitForFunction(playing, undefined, { timeout: 60000 });
+  await guest.waitForTimeout(2500);
+  await assertSynchronized('Failed synchronization corrections');
+  await guest.waitForTimeout(2500);
+  assert.equal(driftReloads, 1, 'Repeated ignored synchronization corrections must cause one bounded source reload.');
+  const driftStreams = events.slice(driftEventsAt).filter(event => event.event === 'stream-start');
+  assert.deepEqual(driftStreams.map(event => event.viewer), [affectedId], 'Synchronization recovery must restart only the affected viewer stream.');
+  assert.ok(await affected.evaluate(() => window.testIgnoredCorrections >= 2), 'The watchdog must first attempt ordinary synchronization corrections.');
+  assert.ok(await affected.evaluate(() => window.testPlaybackReports.some(sample => sample.event === 'sync-recovery')));
+  await affected.unroute('**/api/playback');
+  await assertCallRetained('Failed correction recovery');
+  console.log('Two ineffective hard corrections replaced only the stuck viewer stream and recovered within one second while retaining the call.');
+
+  // Drop snapshots while leaving the socket and pong traffic healthy. Movie
+  // playback must stop trusting its old clock, then reconnect for fresh state.
+  const staleAt = await guest.evaluate(() => {
+    const ws = window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').at(-1);
+    window.testDropAllStates = true; ws.testDropStates = true;
+    window.testStaleSocket = ws;
+    return { stateAt: ws.testLastStateAt, sockets: window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length };
+  });
+  await guest.waitForFunction(() => {
+    const v = document.querySelector('.movie-video');
+    return v.paused && window.testStaleSocket.readyState !== WebSocket.OPEN;
+  }, undefined, { timeout: 12000 });
+  const staleStopped = await guest.locator('.movie-video').evaluate(v => v.currentTime);
+  const staleElapsed = Date.now() - staleAt.stateAt;
+  assert.ok(staleElapsed >= 8000 && staleElapsed < 12000, `A client must reject an eight-second stale timeline promptly (${staleElapsed} ms).`);
+  assert.ok(await guest.evaluate(() => window.testStaleSocket.testDroppedStates >= 2), 'The stale connection must have silently lost multiple real state broadcasts.');
+  await guest.waitForTimeout(1000);
+  assert.equal(await guest.locator('.movie-video').evaluate(v => v.currentTime), staleStopped, 'A stale client must pause its local movie instead of advancing on an outdated clock.');
+  await assertCallRetained('Stale state hold');
+  await guest.evaluate(() => {
+    window.testDropAllStates = false;
+    for (const socket of window.testSockets) socket.testDropStates = false;
+  });
+  await guest.waitForFunction(count => window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length > count, staleAt.sockets, { timeout: 10000 });
+  for (const page of [owner, guest]) await page.waitForFunction(playing, undefined, { timeout: 60000 });
+  await guest.waitForTimeout(2500);
+  await assertSynchronized('Silent state socket recovery');
+  await assertCallRetained('Fresh state reconnect');
+  console.log('An eight-second stale snapshot paused the client movie, reconnected for current state, and resynchronized without reconnecting the call.');
+
+  const socketsBeforeForeground = await guest.evaluate(() => {
+    const count = window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length;
+    window.testDropAllStates = true;
+    document.dispatchEvent(new Event('visibilitychange'));
+    return count;
+  });
+  await guest.waitForFunction(count => document.querySelector('.movie-video').paused && window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length > count, socketsBeforeForeground, { timeout: 2000 });
+  await assertCallRetained('Foreground fresh state hold');
+  await guest.evaluate(() => { window.testDropAllStates = false; for (const socket of window.testSockets) socket.testDropStates = false; });
+  for (const page of [owner, guest]) await page.waitForFunction(playing, undefined, { timeout: 60000 });
+  await guest.waitForTimeout(2500);
+  await assertSynchronized('Foreground fresh state');
+  await assertCallRetained('Foreground resume');
+  console.log('Returning to the foreground requested fresh state immediately before movie playback resumed, preserving the existing call.');
   assert.deepEqual(errors, []);
   assert.ok(events.some(event => event.event === 'join-wait'));
 } finally {

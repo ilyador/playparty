@@ -352,6 +352,33 @@ test('host controls save ordered progress to Plex before Stop returns', async ()
   } finally { if (server.listening) await close(); }
 });
 
+test('recovery diagnostics survive nearby samples while duplicate and burst logging stays bounded', async () => {
+  const logged = [];
+  const plex = { streams: new Map(), resources: new Map(), stop: async () => {} };
+  const { server, close } = createApp({ plex, authenticateOwner: async () => false,
+    livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', recordProgress: false, logPlayback: sample => logged.push(sample) });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  let socket;
+  try {
+    const joined = await fetch(`${base}/api/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"name":"Guest"}' });
+    const cookie = joined.headers.get('set-cookie').split(';')[0];
+    socket = new WebSocket(base.replace(/^http/, 'ws') + '/events', { headers: { Cookie: cookie } });
+    await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+    const processed = new Promise(resolve => socket.on('message', raw => { if (JSON.parse(raw).type === 'pong') resolve(); }));
+    const sample = event => socket.send(JSON.stringify({ type: 'telemetry', event }));
+    sample('sample');
+    for (const event of ['seek-recovery', 'sync-recovery', 'state-stale']) { sample(event); sample(event); }
+    for (let drift = 0; drift < 40; drift++) socket.send(JSON.stringify({ type: 'telemetry', event: 'sync-recovery', drift }));
+    socket.send(JSON.stringify({ type: 'ping', sent: 0 }));
+    await processed;
+    assert.equal(logged.filter(sample => sample.event === 'sample').length, 1);
+    for (const event of ['seek-recovery', 'state-stale']) assert.equal(logged.filter(sample => sample.event === event).length, 1);
+    assert.equal(logged.filter(sample => sample.event === 'sync-recovery' && sample.drift === undefined).length, 1);
+    assert.equal(logged.filter(sample => ['seek-recovery', 'sync-recovery', 'state-stale'].includes(sample.event)).length, 12);
+  } finally { socket?.terminate(); await close(); }
+});
+
 test('Plex timeline reports use milliseconds and continue watching handles hub responses', async () => {
   let received;
   const server = http.createServer((req, res) => {

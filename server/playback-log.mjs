@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const events = new Set(['sample', 'waiting', 'playing', 'ready', 'correction', 'seek-recovery', 'fatal', 'needs-gesture', 'capture-request', 'capture-ready', 'capture-error', 'microphone-status', 'call-audio-status', 'call-audio-output', 'movie-audio', 'quality-change']);
+const events = new Set(['sample', 'waiting', 'playing', 'ready', 'correction', 'seek-recovery', 'sync-recovery', 'state-stale', 'fatal', 'needs-gesture', 'capture-request', 'capture-ready', 'capture-error', 'microphone-status', 'call-audio-status', 'call-audio-output', 'movie-audio', 'quality-change']);
 const numeric = ['mediaVersion', 'position', 'target', 'drift', 'bufferAhead', 'readyState', 'rate', 'captionTracks', 'captionCues', 'maxBitrate'];
 export function playbackMetrics(message) {
   if (!events.has(message.event)) return null;

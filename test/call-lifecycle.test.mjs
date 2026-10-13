@@ -39,9 +39,13 @@ function module(name, imports = {}, globals = {}) {
   vm.runInNewContext(source(name), { exports, require: name => imports[name], ...globals });
   return exports;
 }
-function app(plans, timers = { setInterval, clearInterval }) {
+function app(plans, timers = { setInterval, clearInterval }, initialState) {
   const slots = [], effects = [], rooms = [], sockets = [];
   let cursor = 0, tree, identity = 0;
+  const events = new EventTarget();
+  const movie = { paused: false, pauses: 0, pause() { this.paused = true; this.pauses++; } };
+  const document = { body: { appendChild() {} }, fullscreenElement: null, visibilityState: 'visible',
+    addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) };
   const media = { permissions: { query: async () => ({ state: 'granted' }) } };
   const capture = module('call-capture.ts', {}, { navigator: media });
   const audio = module('call-audio.ts');
@@ -88,18 +92,19 @@ function app(plans, timers = { setInterval, clearInterval }) {
     connect() { return this.plan.connection || Promise.resolve(); }
     startAudio() { return Promise.resolve(); }
     disconnect() {
+      this.disconnections = (this.disconnections || 0) + 1;
       for (const pub of this.localParticipant.trackPublications.values()) void this.localParticipant.unpublishTrack(pub.track);
       this.emit(RoomEvent.Disconnected);
       return Promise.resolve();
     }
   }
-  const state = { movie: null, participants: [], hostPresent: false };
+  const state = initialState || { movie: null, participants: [], hostPresent: false };
   const App = module('App.tsx', {
     react,
     'react/jsx-runtime': { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }), Fragment: 'fragment' },
     'livekit-client': { Room: CallRoom, RoomEvent, Track, AudioPresets: {}, VideoPresets: {} },
     '@phosphor-icons/react': {}, './Call': {}, './Library': {}, './Player': { default: 'player' },
-    './call-capture': capture, './call-audio': audio, './movie-element': { createMovieElement: () => ({}) },
+    './call-capture': capture, './call-audio': audio, './movie-element': { createMovieElement: () => movie },
     './types': {
       contentTitle: content => content.title,
       api: async () => ({ state, owner: false }),
@@ -108,7 +113,7 @@ function app(plans, timers = { setInterval, clearInterval }) {
   }, {
     localStorage: { getItem: () => 'Test', setItem() {} }, location: { search: '', protocol: 'http:', host: 'localhost' },
     window: { addEventListener() {}, removeEventListener() {} },
-    document: { body: { appendChild() {} }, fullscreenElement: null },
+    document, performance,
     WebSocket: class {
       static OPEN = 1;
       readyState = 0; sent = [];
@@ -127,7 +132,8 @@ function app(plans, timers = { setInterval, clearInterval }) {
   }
   render();
   return {
-    rooms, sockets, render,
+    rooms, sockets, render, movie,
+    visibility(value) { document.visibilityState = value; events.dispatchEvent(new Event('visibilitychange')); render(); },
     player: () => find(node => node.type === 'player', tree)?.props,
     button: label => find(node => node.type === 'button' && node.props['aria-label'] === label, tree).props,
     notice: () => find(node => node.props?.className === 'notice', tree)?.props.children[0].props.children,
@@ -136,6 +142,40 @@ function app(plans, timers = { setInterval, clearInterval }) {
     dispose() { for (const slot of slots) slot?.cleanup?.(); },
   };
 }
+
+function clock() {
+  let now = 0, next = 0;
+  const scheduled = new Map();
+  const schedule = (callback, delay, repeat) => {
+    const id = ++next;
+    scheduled.set(id, { callback, delay, repeat, due: now + delay });
+    return id;
+  };
+  return {
+    performance: { now: () => now },
+    setInterval: (callback, delay) => schedule(callback, delay, true),
+    clearInterval: id => scheduled.delete(id),
+    setTimeout: (callback, delay) => schedule(callback, delay, false),
+    clearTimeout: id => scheduled.delete(id),
+    get scheduled() { return [...scheduled.values()]; },
+    advance(milliseconds) {
+      const end = now + milliseconds;
+      while (true) {
+        const next = [...scheduled].filter(([, timer]) => timer.due <= end).sort((a, b) => a[1].due - b[1].due)[0];
+        if (!next) break;
+        const [id, timer] = next;
+        now = timer.due;
+        if (timer.repeat) timer.due += timer.delay;
+        else scheduled.delete(id);
+        timer.callback();
+      }
+      now = end;
+    },
+  };
+}
+const movieState = { type: 'state', movie: { id: 'current-movie', title: 'Current movie' }, participants: [], paused: false, position: 42, updatedAt: 8000, mediaVersion: 2 };
+const open = socket => { socket.readyState = 1; socket.onopen(); };
+const receive = (socket, state = movieState) => socket.onmessage({ data: JSON.stringify(state) });
 
 test('startup capture blocks a second device request, and SDK mute disables the only microphone', async t => {
   const connection = deferred(), consent = deferred(), initial = tracks();
@@ -230,14 +270,11 @@ test('native device recovery remains owned when leaving before or after the perm
 });
 
 test('old socket callbacks after rejoin preserve the new movie, clock and ping timer', async t => {
-  const intervals = new Map(); let nextInterval = 0;
+  const timer = clock();
   const view = app([
     { capture: async () => tracks() },
     { capture: async () => tracks() },
-  ], {
-    setInterval(callback, delay) { const id = ++nextInterval; intervals.set(id, { callback, delay }); return id; },
-    clearInterval(id) { intervals.delete(id); },
-  });
+  ], timer);
   t.after(() => view.dispose());
   await view.join();
   const old = view.sockets[0]; old.readyState = 1; old.onopen();
@@ -247,8 +284,8 @@ test('old socket callbacks after rejoin preserve the new movie, clock and ping t
   current.onmessage({ data: JSON.stringify(state) });
   current.onmessage({ data: JSON.stringify({ type: 'pong', serverTime: Date.now() + 100, sent: Date.now() }) });
   view.render();
-  const before = view.player(), ping = [...intervals.values()].find(timer => timer.delay === 10000);
-  assert.ok(ping);
+  const before = view.player(), heartbeat = timer.scheduled.find(timer => timer.delay === 2000);
+  assert.ok(heartbeat);
   old.onopen();
   old.onmessage({ data: JSON.stringify({ ...state, movie: { id: 'old-movie' }, position: 999, mediaVersion: 1 }) });
   old.onmessage({ data: JSON.stringify({ type: 'pong', serverTime: 0, sent: 0 }) });
@@ -256,7 +293,106 @@ test('old socket callbacks after rejoin preserve the new movie, clock and ping t
   assert.deepEqual(view.player().state, before.state);
   assert.equal(view.player().clockOffset, before.clockOffset);
   assert.equal(view.player().connectionVersion, before.connectionVersion);
-  assert.deepEqual([...intervals.values()], [ping]);
-  const sent = current.sent.length; ping.callback();
+  assert.deepEqual(timer.scheduled, [heartbeat]);
+  const sent = current.sent.length;
+  timer.advance(6000); receive(current, state); timer.advance(4000);
   assert.equal(current.sent.length, sent + 1);
+});
+
+test('the state watchdog is local-only while snapshots arrive and keeps the existing ten-second ping', async t => {
+  const timer = clock(), view = app([{ capture: async () => tracks() }], timer, movieState);
+  t.after(() => view.dispose());
+  await view.join();
+  const socket = view.sockets[0]; open(socket); view.render();
+  assert.equal(view.player().stateFresh, false, 'Opening a transport does not establish timeline freshness.');
+  receive(socket); view.render();
+  assert.equal(view.player().stateFresh, true);
+  const generation = view.player().connectionVersion;
+  const initialPings = socket.sent.filter(message => message.type === 'ping').length;
+  for (let i = 0; i < 10; i++) { timer.advance(2000); receive(socket); view.render(); }
+  assert.equal(view.sockets.length, 1);
+  assert.equal(view.player().connectionVersion, generation, 'Ordinary snapshots must not repeatedly clear player readiness.');
+  assert.equal(socket.sent.filter(message => message.type === 'ping').length, initialPings + 2);
+  assert.equal(view.rooms.length, 1);
+  assert.equal(view.rooms[0].requests.length, 1);
+});
+
+test('a silent open socket pauses the movie and replaces only party transport after eight seconds', async t => {
+  const timer = clock(), initial = tracks(), view = app([{ capture: async () => initial }], timer, movieState);
+  t.after(() => view.dispose());
+  await view.join();
+  const old = view.sockets[0]; open(old); receive(old); view.render();
+  const generation = view.player().connectionVersion;
+  view.movie.paused = false;
+  timer.advance(6000); view.render();
+  assert.equal(view.sockets.length, 1);
+  assert.equal(view.player().stateFresh, true);
+  timer.advance(2000); view.render();
+  assert.equal(view.movie.paused, true);
+  assert.equal(view.player().stateFresh, false);
+  assert.equal(old.readyState, 3);
+  assert.equal(view.sockets.length, 2);
+  assert.equal(view.rooms.length, 1, 'Recovering movie transport must retain the video call.');
+  assert.equal(view.rooms[0].disconnections || 0, 0);
+  assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'live'));
+  const replacement = view.sockets[1]; open(replacement); view.render();
+  assert.equal(view.player().stateFresh, false);
+  old.onmessage({ data: JSON.stringify({ ...movieState, position: 999 }) }); old.onclose(); view.render();
+  assert.equal(view.player().state.position, 42);
+  assert.equal(view.player().connectionVersion, generation);
+  receive(replacement, { ...movieState, position: 50 }); view.render();
+  assert.equal(view.player().stateFresh, true);
+  assert.equal(view.player().state.position, 50);
+  assert.equal(view.player().connectionVersion, generation + 1);
+  timer.advance(1500);
+  assert.equal(view.sockets.length, 2, 'A replaced socket close callback must not leave an extra reconnect scheduled.');
+});
+
+test('missing initial state times out even when pongs arrive or the socket never opens', async t => {
+  for (const opened of [false, true]) await t.test(opened ? 'open without state' : 'connecting', async () => {
+    const timer = clock(), view = app([{ capture: async () => tracks() }], timer, movieState);
+    try {
+      await view.join();
+      const socket = view.sockets[0];
+      if (opened) { open(socket); receive(socket, { type: 'pong', serverTime: 100, sent: 0 }); }
+      timer.advance(8000); view.render();
+      assert.equal(view.sockets.length, 2);
+      assert.equal(view.player().stateFresh, false);
+      assert.equal(view.movie.paused, true);
+      timer.advance(6000);
+      assert.equal(view.sockets.length, 2, 'Every replacement gets its own full freshness timeout.');
+      timer.advance(2000);
+      assert.equal(view.sockets.length, 3);
+      assert.equal(view.rooms.length, 1);
+    } finally { view.dispose(); }
+  });
+});
+
+test('foreground refresh replaces party transport immediately without losing the call or queued cleanup', async t => {
+  const timer = clock(), initial = tracks(), view = app([{ capture: async () => initial }], timer, movieState);
+  t.after(() => view.dispose());
+  await view.join();
+  const first = view.sockets[0]; open(first); receive(first); view.render();
+  view.visibility('hidden');
+  assert.equal(view.sockets.length, 1, 'Backgrounding alone must not reconnect or leave the call.');
+  view.movie.paused = false;
+  view.visibility('visible');
+  assert.equal(view.movie.paused, true);
+  assert.equal(view.player().stateFresh, false);
+  assert.equal(view.sockets.length, 2);
+  const second = view.sockets[1]; open(second); receive(second); view.render();
+  second.readyState = 3; second.onclose(); view.render();
+  assert.equal(view.player().stateFresh, false);
+  view.visibility('visible');
+  assert.equal(view.sockets.length, 3, 'Foregrounding should immediately replace a scheduled delayed reconnect.');
+  const third = view.sockets[2]; open(third); receive(third);
+  timer.advance(1500);
+  assert.equal(view.sockets.length, 3);
+  assert.equal(view.rooms[0].disconnections || 0, 0);
+  assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'live'));
+  await view.leave();
+  const count = view.sockets.length;
+  view.visibility('visible'); timer.advance(20000);
+  assert.equal(view.sockets.length, count, 'Leave must remove foreground handling and its watchdog timer.');
+  assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'ended'));
 });

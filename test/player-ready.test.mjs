@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { Party } from '../server/party.mjs';
+import { syncWatchdog } from '../src/sync-watchdog.ts';
 
 const playerCode = ts.transpileModule(fs.readFileSync(new URL('../src/Player.tsx', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
@@ -17,6 +18,8 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
   const samples = [], hlsInstances = [];
   let cursor = 0;
   let tree;
+  let stateFresh = true;
+  let hidden = false;
   const video = {
     paused: true, readyState: 4, currentTime, seeking: false, playbackRate: 1, ended: false, playCalls: 0,
     volume: 1, muted: false, error: null,
@@ -82,24 +85,25 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
     './movie-element': { createMovieElement: element => element },
     './sync-rate': { syncRate: () => 1 },
     './seek-watchdog': { seekWatchdog: () => ({ reset() {}, sample: () => ({ stalled: false, reload: false }) }) },
+    './sync-watchdog': { syncWatchdog },
     './adaptive-quality': { createAdaptiveQuality: () => ({ configure() {}, sample() {} }) },
     'hls.js': { default: Hls },
   };
   const exports = {};
   vm.runInNewContext(playerCode, {
     exports, require: name => modules[name] || {},
-    document: { addEventListener() {}, removeEventListener() {} },
+    document: { get hidden() { return hidden; }, addEventListener() {}, removeEventListener() {} },
     window: {
       setInterval: callback => { intervals.add(callback); return callback; },
       clearInterval: callback => intervals.delete(callback), addEventListener() {}, removeEventListener() {},
     },
-    AbortController, performance: { now: () => 10000 }, Date: class extends Date { static now() { return party.clock(); } }, setTimeout, clearTimeout,
+    AbortController, performance: { now: () => party.clock() + 10000 }, Date: class extends Date { static now() { return party.clock(); } }, setTimeout, clearTimeout,
     requestAnimationFrame: () => 1, cancelAnimationFrame() {},
   });
   const render = () => {
     cursor = 0;
     tree = exports.default({
-      mediaElement: video, state: party.snapshot(), owner: member.owner, speaking: false,
+      mediaElement: video, state: party.snapshot(), stateFresh, owner: member.owner, speaking: false,
       clockOffset: 0, connectionVersion: 1, fullscreen: false, onFullscreen() {}, onStop: async () => {},
       onReady: version => { ready.push(version); party.markReady(member.id, version); },
       onBuffering: version => { buffering.push(version); party.buffering(member.id, version); }, onTelemetry: sample => samples.push(sample),
@@ -117,6 +121,9 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
   render();
   return {
     video, ready, buffering, posts, samples, hlsInstances, render,
+    setFresh: value => { stateFresh = value; render(); },
+    setHidden: value => { hidden = value; },
+    pendingSources: () => requests.length,
     emit: event => [...(listeners.get(event) || [])].forEach(callback => callback({ type: event })),
     tick: () => [...intervals].forEach(callback => callback()),
     control: label => find(tree, props => props?.['aria-label'] === label),
@@ -315,5 +322,103 @@ test('a queued playing event from before autoplay refusal cannot release the sha
     assert.equal(party.paused, true);
     assert.equal(party.ready.has(host.id), false);
     assert.equal(player.video.playCalls, 1, 'The player must not retry successful playback without the required gesture.');
+  } finally { player.dispose(); }
+});
+
+test('failed hard corrections reload only this source and keep the cooldown through replacement', async () => {
+  let now = 1000;
+  const { party, host, guest } = setup(() => now);
+  const player = mountPlayer(party, host, { bufferedEnd: 120 });
+  try {
+    await player.loadSource(); player.tick();
+    party.markReady(guest.id, party.mediaVersion); player.render();
+    now = party.updatedAt; player.tick();
+    player.emit('playing');
+    Object.defineProperty(player.video, 'currentTime', { configurable: true, get: () => 0, set() {} });
+    for (let i = 0; i < 3; i++) { now += 2100; player.tick(); }
+    assert.equal(player.samples.filter(sample => sample.event === 'correction').length, 2);
+    assert.equal(player.samples.filter(sample => sample.event === 'sync-recovery').length, 1);
+    player.render();
+    assert.equal(player.pendingSources(), 1, 'Recovery requests exactly one replacement for the affected player.');
+
+    Object.defineProperty(player.video, 'currentTime', { configurable: true, writable: true, value: party.position });
+    await player.loadSource(); player.tick();
+    party.markReady(guest.id, party.mediaVersion); player.render();
+    now = party.updatedAt; player.tick(); player.emit('playing');
+    const frozen = player.video.currentTime;
+    Object.defineProperty(player.video, 'currentTime', { configurable: true, get: () => frozen, set() {} });
+    for (let i = 0; i < 4; i++) { now += 2100; player.tick(); player.render(); }
+    assert.equal(player.pendingSources(), 0, 'Source replacement cannot reset the 30-second recovery cooldown.');
+    assert.equal(player.samples.filter(sample => sample.event === 'sync-recovery').length, 1);
+  } finally { player.dispose(); }
+});
+
+test('hidden playback resets failed-correction history and normal advancing playback stays healthy', async () => {
+  let now = 1000;
+  const { party, host, guest } = setup(() => now);
+  const player = mountPlayer(party, host, { bufferedEnd: 120 });
+  try {
+    await player.loadSource(); player.tick();
+    party.markReady(guest.id, party.mediaVersion); player.render();
+    now = party.updatedAt; player.tick(); player.emit('playing');
+    Object.defineProperty(player.video, 'currentTime', { configurable: true, get: () => 0, set() {} });
+    for (let i = 0; i < 2; i++) { now += 2100; player.tick(); }
+    player.setHidden(true); now += 10000; player.tick();
+    assert.equal(player.samples.filter(sample => sample.event === 'sync-recovery').length, 0);
+    player.setHidden(false); now += 2100; player.tick();
+    now += 2100; player.tick();
+    assert.equal(player.samples.filter(sample => sample.event === 'sync-recovery').length, 0, 'A hidden-period correction cannot become an additional failed active correction.');
+
+    Object.defineProperty(player.video, 'currentTime', { configurable: true, writable: true, value: party.currentPosition() });
+    for (let i = 0; i < 4; i++) { now += 2100; player.video.currentTime = party.currentPosition(); player.tick(); }
+    assert.equal(player.samples.filter(sample => sample.event === 'sync-recovery').length, 0);
+    assert.equal(player.pendingSources(), 0);
+  } finally { player.dispose(); }
+});
+
+test('stale state blocks ready, corrections and automatic playback until a fresh snapshot arrives', async () => {
+  const { party, host } = setup();
+  const player = mountPlayer(party, host);
+  try {
+    await player.loadSource();
+    player.setFresh(false);
+    player.video.currentTime = 8;
+    player.video.paused = false;
+    player.emit('playing'); player.emit('canplay'); player.tick();
+    assert.equal(player.video.paused, true);
+    assert.equal(player.video.currentTime, 8, 'Stale state cannot apply even a buffered correction.');
+    assert.equal(player.ready.length, 0);
+    assert.equal(player.video.playCalls, 0);
+
+    player.video.currentTime = 0;
+    player.setFresh(true);
+    assert.equal(player.ready.length, 1, 'Fresh resumption runs the normal readiness check without waiting for another interval.');
+  } finally { player.dispose(); }
+});
+
+test('freshness loss pauses running playback and late play promises cannot start stale audio', async () => {
+  let now = 1000;
+  const { party, host, guest } = setup(() => now);
+  const player = mountPlayer(party, host);
+  try {
+    await player.loadSource(); player.tick();
+    party.markReady(guest.id, party.mediaVersion); player.render();
+    now = party.updatedAt; player.tick();
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    player.emit('playing');
+    assert.equal(player.video.paused, false);
+    player.setFresh(false);
+    assert.equal(player.video.paused, true, 'Freshness loss pauses synchronously in the layout effect.');
+    player.setFresh(true);
+    assert.equal(player.video.paused, false, 'Fresh state resumes synchronization immediately.');
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+
+    player.video.pause();
+    let resolvePlay;
+    player.video.play = () => new Promise(resolve => { resolvePlay = resolve; });
+    player.tick(); player.setFresh(false);
+    player.video.paused = false; resolvePlay();
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    assert.equal(player.video.paused, true, 'A previously requested play checks freshness again when it resolves.');
   } finally { player.dispose(); }
 });

@@ -86,7 +86,9 @@ Playback waits for four seconds of buffered data and every connected viewer befo
 
 Join authorizes the movie player during your tap, and the same video element is retained across stream changes. If a browser still blocks playback, use the normal play control; the shared clock waits. Refreshing or rejoining requires fresh buffer readiness. A stuck seek holds the clock and, when data is available, restarts the affected stream.
 
-Private playback logs are written to `data/playback.log`, with two rotated files and a total limit of roughly 6 MB. They record stream decisions, buffer levels, playback drift, readiness, shared pauses/resumes, and transcode measurements. Call diagnostics record actual microphone mute and applied processing, plus audio output counts to detect duplicate playback. They omit names, media titles, tokens, and stream URLs.
+Sync checks run locally in the existing player loop. If two ordinary corrections fail, Playparty restarts only the affected movie stream, with a 30-second cooldown. Pausing, buffering, seeking, and browser permission blocks do not trigger this recovery. If party updates stop arriving for eight seconds, that viewer's movie pauses while the party connection reconnects. Returning to the tab also requests current state. The video call stays connected.
+
+Private playback logs are written to `data/playback.log`, with two rotated files and a total limit of roughly 6 MB. They record stream decisions, buffer levels, playback drift, readiness, shared pauses/resumes, transcode measurements, and automatic sync recovery. Call diagnostics record actual microphone mute and applied processing, plus audio output counts to detect duplicate playback. They omit names, media titles, tokens, and stream URLs.
 
 ```sh
 tail -f data/playback.log

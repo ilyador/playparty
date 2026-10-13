@@ -325,7 +325,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
           }
           if (message.type === 'telemetry') {
             const metrics = playbackMetrics(message);
-            const diagnostic = metrics && /^(capture-|microphone-|call-audio-|movie-audio)/.test(metrics.event);
+            const diagnostic = metrics && (/^(capture-|microphone-|call-audio-|movie-audio)/.test(metrics.event) || ['seek-recovery', 'sync-recovery', 'state-stale'].includes(metrics.event));
             if (diagnostic) {
               const now = Date.now();
               if (!session.deviceTelemetry || now - session.deviceTelemetry.since >= 1000) session.deviceTelemetry = { since: now, count: 0, seen: new Map() };

@@ -33,6 +33,7 @@ export default function App() {
   const [connection, setConnection] = useState('Connecting');
   const [clockOffset, setClockOffset] = useState(0);
   const [connectionVersion, setConnectionVersion] = useState(0);
+  const [stateFresh, setStateFresh] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const call = useRef<Room | null>(null);
   const captureSession = useRef<ReturnType<typeof callCapture> | null>(null);
@@ -72,37 +73,69 @@ export default function App() {
     if (!joined) return;
     let disposed = false;
     let reconnect: ReturnType<typeof setTimeout> | undefined;
-    let pingTimer: ReturnType<typeof setInterval> | undefined;
+    let lastStateAt = performance.now();
+    let lastPingAt = 0;
     const pendingDiagnostics = new Map<string, object>();
     leaveRef.current = false;
     setDevicesReady(false);
     setAudioBlocked(false);
+    const invalidateState = () => { movieElement.current?.pause(); setStateFresh(false); };
     const connectEvents = () => {
       if (disposed || leaveRef.current) return;
+      clearTimeout(reconnect);
+      invalidateState();
+      lastStateAt = performance.now();
+      let receivedState = false;
       const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/events`);
       socket.current = ws;
       ws.onopen = () => {
         if (disposed || leaveRef.current || socket.current !== ws) { ws.close(); return; }
-        setConnectionVersion(version => version + 1);
         ws.send(JSON.stringify({ type: 'ping', sent: Date.now() }));
+        lastPingAt = performance.now();
         for (const sample of pendingDiagnostics.values()) ws.send(JSON.stringify({ type: 'telemetry', ...sample }));
         pendingDiagnostics.clear();
-        clearInterval(pingTimer);
-        pingTimer = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping', sent: Date.now() })); }, 10000);
       };
       ws.onmessage = event => {
         if (disposed || leaveRef.current || socket.current !== ws) return;
         const message = JSON.parse(event.data);
-        if (message.type === 'state') setState(message);
+        if (message.type === 'state') {
+          lastStateAt = performance.now();
+          setState(message);
+          if (!receivedState) { receivedState = true; setConnectionVersion(version => version + 1); }
+          setStateFresh(true);
+        }
         if (message.type === 'pong') setClockOffset(message.serverTime - (Date.now() + message.sent) / 2);
       };
       ws.onclose = () => {
         if (disposed || leaveRef.current || socket.current !== ws) return;
-        clearInterval(pingTimer);
+        invalidateState();
+        socket.current = null;
         reconnect = setTimeout(connectEvents, 1500);
       };
     };
+    const replaceEvents = () => {
+      if (disposed || leaveRef.current) return;
+      const previous = socket.current;
+      socket.current = null;
+      invalidateState();
+      previous?.close();
+      connectEvents();
+    };
     connectEvents();
+    // Healthy checks are local; pings keep their ten-second cadence.
+    const heartbeat = setInterval(() => {
+      if (disposed || leaveRef.current || !socket.current) return;
+      const ws = socket.current;
+      const now = performance.now();
+      if (now - lastStateAt >= 8000) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'telemetry', event: 'state-stale' }));
+        replaceEvents();
+      } else if (ws.readyState === WebSocket.OPEN && now - lastPingAt >= 10000) {
+        lastPingAt = now; ws.send(JSON.stringify({ type: 'ping', sent: Date.now() }));
+      }
+    }, 2000);
+    const foreground = () => { if (document.visibilityState === 'visible') replaceEvents(); };
+    document.addEventListener('visibilitychange', foreground);
     const room = new Room({
       adaptiveStream: true, dynacast: true,
       audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -181,7 +214,8 @@ export default function App() {
       }
     }).catch(() => { if (!disposed && !leaveRef.current) { setConnection('Disconnected'); setNotice('The call could not connect. Check your connection and rejoin.'); } });
     return () => {
-      disposed = true; clearTimeout(reconnect); clearInterval(pingTimer); socket.current?.close();
+      disposed = true; clearTimeout(reconnect); clearInterval(heartbeat); socket.current?.close();
+      document.removeEventListener('visibilitychange', foreground);
       capture.dispose();
       stopMonitoring();
       if (captureSession.current === capture) captureSession.current = null;
@@ -209,6 +243,8 @@ export default function App() {
   }
   async function leave() {
     leaveRef.current = true;
+    movieElement.current?.pause();
+    setStateFresh(false);
     setDevicesReady(false);
     captureSession.current?.dispose();
     if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
@@ -277,7 +313,7 @@ export default function App() {
       </div>
     </section> : <>
       <section className={`stage${watching ? ' has-movie' : ''}`}>
-        {watching && state && movieElement.current ? <div className="movie-stage"><Player key={state.movie?.id} mediaElement={movieElement.current} state={state} owner={joined.owner} speaking={speaking} clockOffset={clockOffset} connectionVersion={connectionVersion} fullscreen={fullscreen} onFullscreen={setFullscreen} onStop={stopMovie} onReady={version => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'ready', mediaVersion: version })); }} onBuffering={version => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'buffering', mediaVersion: version })); }} onTelemetry={sample => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'telemetry', ...sample })); }} /></div>
+        {watching && state && movieElement.current ? <div className="movie-stage"><Player key={state.movie?.id} mediaElement={movieElement.current} state={state} stateFresh={stateFresh} owner={joined.owner} speaking={speaking} clockOffset={clockOffset} connectionVersion={connectionVersion} fullscreen={fullscreen} onFullscreen={setFullscreen} onStop={stopMovie} onReady={version => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'ready', mediaVersion: version })); }} onBuffering={version => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'buffering', mediaVersion: version })); }} onTelemetry={sample => { if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'telemetry', ...sample })); }} /></div>
           : <div className={`call-stage participants-${ordered.length < 5 ? ordered.length : 'many'}`}>
             {remote.length === 0 && <div className="waiting"><span className="waiting-icon"><VideoCamera size={32} weight="light" /></span><h1>Room for good company.</h1><p>{joined.owner ? 'Send the link. Your friends will join you here.' : state?.hostPresent ? 'You’re in. The host will pick something to watch.' : 'You’re in. Waiting for the host.'}</p>{joined.owner && <button className="secondary-button" onClick={() => setPicker(true)}><FilmSlate size={19} />Choose something to watch</button>}</div>}
             {ordered.map(participant => <Face key={participant.identity} participant={participant} local={participant.identity === joined.identity} large={remote.length > 0} />)}
