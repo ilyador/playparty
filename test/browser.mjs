@@ -14,7 +14,7 @@ const playbackEvents = [];
 const { server, party, close } = createApp({ plex, authenticateOwner: header => cookies(header).test_owner === testOwner,
   livekitKey: process.env.LIVEKIT_API_KEY, livekitSecret: process.env.LIVEKIT_API_SECRET,
   livekitUrl: 'ws://localhost:7880', origin: 'http://localhost:5176', movieMbps: 70, roomName: `playparty-test-${randomUUID()}`, recordProgress: false,
-  assetsRoot: process.env.TEST_BUILD_DIR ? path.resolve(process.env.TEST_BUILD_DIR) : undefined, logPlayback: sample => playbackEvents.push(sample) });
+  assetsRoot: process.env.TEST_BUILD_DIR ? path.resolve(process.env.TEST_BUILD_DIR) : undefined, logPlayback: sample => playbackEvents.push({ ...sample, testAt: Date.now() }) });
 await new Promise(resolve => server.listen(5176, '127.0.0.1', resolve));
 let browser;
 const output = '.impeccable/review';
@@ -22,9 +22,22 @@ if (process.env.TEST_CAPTURE === '1') fs.mkdirSync(output, { recursive: true });
 const args = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'];
 const playing = () => { const v = document.querySelector('.movie-video'); return v && v.readyState >= 3 && v.currentTime > 2 && !v.paused; };
 const instrument = () => {
-  const Native = window.RTCPeerConnection;
+  const Native = window.RTCPeerConnection, NativeSocket = window.WebSocket;
   window.testPeers = [];
   window.testMediaRequests = [];
+  window.testClock = {};
+  window.WebSocket = class extends NativeSocket {
+    constructor(...args) {
+      super(...args);
+      if (new URL(this.url).pathname === '/events') this.addEventListener('message', event => {
+        const message = JSON.parse(event.data);
+        if (message.type === 'pong') {
+          const received = Date.now();
+          window.testClock = { offsetMs: message.serverTime - (received + message.sent) / 2, rttMs: received - message.sent };
+        }
+      });
+    }
+  };
   for (const name of ['play', 'playing', 'timeupdate']) document.addEventListener(name, event => { if (window.testMissingMediaEvents && event.target?.classList.contains('movie-video')) event.stopImmediatePropagation(); }, true);
   const getMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
   navigator.mediaDevices.getUserMedia = constraints => { window.testMediaRequests.push(constraints); return getMedia(constraints); };
@@ -46,6 +59,8 @@ try {
   await context.addInitScript(instrument);
   await context.addCookies([{ name: 'test_owner', value: testOwner, url: 'http://localhost:5176' }]);
   const page = await context.newPage();
+  const hostStreams = [];
+  page.on('response', async response => { if (response.url().endsWith('/api/playback') && response.ok()) hostStreams.push(await response.json()); });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (['error', 'warning'].includes(message.type())) console.log('BROWSER', message.text().slice(0, 350)); });
@@ -93,6 +108,58 @@ try {
   await guest.locator('#name').fill('Test Guest');
   await guest.getByRole('button', { name: 'Join', exact: true }).click();
   await guest.waitForFunction(playing, undefined, { timeout: 45000 });
+  const assertSustainedSynchronization = async label => {
+    let viewerDrift = 0, timelineDrift = 0, samples = 0, healthySince, hold, holds = 0, heldMs = 0, localWaitSince;
+    const deadline = Date.now() + 45000;
+    while (Date.now() < deadline) {
+      const snapshot = party.snapshot();
+      const positions = await Promise.all([page, guest].map(viewer => viewer.locator('.movie-video').evaluate(video => ({ position: video.currentTime, paused: video.paused, readyState: video.readyState, seeking: video.seeking, rate: video.playbackRate, clock: window.testClock, at: Date.now() }))));
+      const absolute = positions.map((sample, index) => ({ ...sample, position: sample.position + (index === 0 ? hostStreams : guestStreams).at(-1).offset }));
+      const after = party.snapshot();
+      if (['mediaVersion', 'readinessVersion', 'updatedAt', 'position', 'paused', 'waiting'].some(key => snapshot[key] !== after[key])) {
+        healthySince = localWaitSince = undefined;
+        await page.waitForTimeout(500);
+        continue;
+      }
+      const now = Date.now();
+      if (!snapshot.paused && now < snapshot.updatedAt) { healthySince = localWaitSince = undefined; await page.waitForTimeout(500); continue; }
+      if (snapshot.paused) {
+        healthySince = localWaitSince = undefined;
+        if (!hold || hold.version !== snapshot.readinessVersion) {
+          if (hold) heldMs += now - hold.at;
+          hold = { at: now, position: snapshot.position, version: snapshot.readinessVersion }; holds++;
+          const reasons = playbackEvents.filter(sample => ['shared-buffering', 'quality-change', 'stream-start', 'viewer-ready', 'shared-resume', 'waiting', 'playing', 'ready', 'seek-recovery', 'sync-recovery', 'state-stale'].includes(sample.event)).slice(-8).map(sample => ({ event: sample.event, viewer: sample.viewer === 'owner' ? 'host' : sample.viewer ? 'guest' : undefined, qualityReason: sample.qualityReason, readyState: sample.readyState }));
+          console.log(`${label}: shared hold ${JSON.stringify({ paused: snapshot.paused, waiting: snapshot.waiting, media: absolute.map(sample => ({ paused: sample.paused, readyState: sample.readyState, seeking: sample.seeking })), reasons })}`);
+        }
+        if (snapshot.paused && now - hold.at >= 750) {
+          assert.equal(snapshot.position, hold.position, `${label}: buffering must freeze the shared timeline.`);
+          assert.ok(absolute.every(sample => sample.paused), `${label}: both viewers must stop during an established shared buffering hold.`);
+        }
+      } else if (absolute.every(sample => !sample.paused && sample.readyState >= 3 && !sample.seeking)) {
+        if (hold) { heldMs += now - hold.at; hold = undefined; }
+        localWaitSince = undefined; healthySince ??= now;
+        const difference = Math.abs(absolute[0].position - absolute[1].position);
+        viewerDrift = Math.max(viewerDrift, difference);
+        assert.ok(difference < 1, `${label}: viewers drifted ${difference.toFixed(3)} seconds apart.`);
+        for (const [index, sample] of absolute.entries()) {
+          const target = Math.min(snapshot.position + Math.max(0, sample.at - snapshot.updatedAt) / 1000, snapshot.movie.duration);
+          const drift = Math.abs(sample.position - target);
+          timelineDrift = Math.max(timelineDrift, drift);
+          assert.ok(drift < 1, `${label}: a viewer drifted ${drift.toFixed(3)} seconds from the shared timeline. ${JSON.stringify({ viewer: index === 0 ? 'host' : 'guest', drift: sample.position - target, position: sample.position, target, rate: sample.rate, readyState: sample.readyState, seeking: sample.seeking, clock: sample.clock, recent: playbackEvents.filter(event => ['correction', 'sync-recovery', 'seek-recovery', 'shared-buffering', 'shared-resume', 'quality-change', 'stream-start'].includes(event.event)).slice(-6).map(event => ({ event: event.event, viewer: event.viewer === 'owner' ? 'host' : 'guest', drift: event.drift, qualityReason: event.qualityReason, ageMs: now - event.testAt })) })}`);
+        }
+        samples++;
+        if (now - healthySince >= 10000) {
+          console.log(`${label}: ${samples} settled samples, ten continuous healthy seconds; maximum viewer drift ${viewerDrift.toFixed(3)} s, shared-timeline drift ${timelineDrift.toFixed(3)} s; ${holds} shared holds totaling ${(heldMs / 1000).toFixed(3)} s.`);
+          return;
+        }
+      } else {
+        healthySince = undefined; localWaitSince ??= now;
+        assert.ok(now - localWaitSince < 1500, `${label}: an unready client cannot advance the shared timeline for more than 1.5 seconds.`);
+      }
+      await page.waitForTimeout(500);
+    }
+    assert.fail(`${label}: ten continuous synchronized playback seconds were not reached within 45 seconds (${holds} shared holds).`);
+  };
   if (process.env.TEST_REMOTE === '1') {
     const deadline = Date.now() + 45000;
     while (!guestStreams.some(stream => stream.remote && stream.currentBitrate < stream.maxBitrate) && Date.now() < deadline) await guest.waitForTimeout(250);
@@ -100,6 +167,7 @@ try {
     await remoteNetwork.send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
     await page.waitForFunction(playing, undefined, { timeout: 45000 });
     await guest.waitForFunction(playing, undefined, { timeout: 45000 });
+    await assertSustainedSynchronization('Remote recovery after 200000 B/s download and 20 ms latency');
     assert.ok(playbackEvents.some(sample => sample.event === 'stream-start' && sample.viewer === 'owner' && sample.remote === false && sample.maxBitrate === 0), 'Local playback must retain its unrestricted compatible stream.');
     console.log('Throttled remote playback lowered its own Plex stream cap and resumed; local playback remained unrestricted.');
   }
@@ -236,6 +304,8 @@ try {
   if (imageMovie) {
     await post('select', { id: imageMovie.id });
     await page.waitForFunction(playing, undefined, { timeout: 45000 });
+    await guest.waitForFunction(playing, undefined, { timeout: 45000 });
+    const transcodeEventsAt = playbackEvents.length;
     const track = imageMovie.subtitles.find(track => track.burn);
     let delayed = false;
     let release;
@@ -256,11 +326,16 @@ try {
     assert.ok(delayed && stillHeld.paused && stillHeld.waiting, 'A slow transcode must not force playback after ten seconds.');
     assert.equal(stillHeld.position, held.position, 'The shared position must remain frozen while the transcoder catches up.');
     assert.ok(await guest.locator('.movie-video').evaluate(v => v.paused), 'The other viewer must wait too.');
+    assert.equal(playbackEvents.slice(transcodeEventsAt).filter(sample => ['sync-recovery', 'seek-recovery', 'state-stale'].includes(sample.event)).length, 0, 'A legitimate twelve-second transcode hold must not trigger synchronization recovery loops.');
+    assert.equal(playbackEvents.slice(transcodeEventsAt).filter(sample => sample.event === 'stream-start' && sample.viewer === 'owner').length, 1, 'The slow caption source must not be repeatedly replaced while it buffers.');
     release();
     await page.waitForFunction(playing, undefined, { timeout: 45000 });
     await guest.waitForFunction(playing, undefined, { timeout: 45000 });
     await page.unroute('**/api/stream/**');
     assert.ok(Math.abs(await page.locator('.movie-video').evaluate(v => v.currentTime) - await guest.locator('.movie-video').evaluate(v => v.currentTime)) < 1, 'Viewers must resume together after a slow transcode.');
+    await assertSustainedSynchronization('Recovery after twelve-second caption transcode hold');
+    assert.equal(playbackEvents.slice(transcodeEventsAt).filter(sample => ['sync-recovery', 'seek-recovery', 'state-stale'].includes(sample.event)).length, 0, 'Healthy recovered playback must not trigger automatic reload loops.');
+    assert.equal(playbackEvents.slice(transcodeEventsAt).filter(sample => sample.event === 'stream-start' && sample.viewer === 'owner').length, 1, 'Caption recovery must retain its single replacement source.');
     assert.equal(await page.locator('.quality-label').textContent(), 'Optimized video');
     console.log('Plex image captions stayed synchronized through a twelve-second transcode delay and resumed within one second.');
   } else console.log('Image-caption check skipped: library has no image subtitle tracks.');
