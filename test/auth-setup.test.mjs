@@ -23,6 +23,52 @@ test('external auth has no Plex sign-in routes and cannot trust a standalone coo
   } finally { await close(); }
 });
 
+test('external auth offers relative same-origin sign-in only when reachable Plex needs authentication', async () => {
+  let available = true;
+  const { server, close } = createApp({
+    plex: { canAccess: async () => available, streams: new Map(), stop: async () => {} },
+    authenticateOwner: async cookie => cookie === 'external_session=valid', loginUrl: '/login',
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const session = async (cookie = '') => (await fetch(`${base}/api/session`, { headers: { Cookie: cookie } })).json();
+  const join = cookie => fetch(`${base}/api/join`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name: 'Host', host: true }),
+  });
+  try {
+    const unauthenticated = await session();
+    assert.equal(unauthenticated.canHost, false);
+    assert.equal(unauthenticated.loginUrl, '/login', 'The installed app can authenticate within its own origin and cookie jar.');
+    assert.equal(new URL(unauthenticated.loginUrl, base).origin, base);
+    assert.equal((await join('external_session=forged')).status, 403, 'Offering sign-in does not bypass the host gate.');
+    const authenticated = await session('external_session=valid');
+    assert.equal(authenticated.canHost, true);
+    assert.equal('loginUrl' in authenticated, false);
+    available = false;
+    assert.equal((await join('external_session=valid')).status, 403, 'Fresh host checks detect Plex going offline.');
+    for (const cookie of ['', 'external_session=valid']) {
+      const offline = await session(cookie);
+      assert.equal(offline.canHost, false);
+      assert.equal('loginUrl' in offline, false, 'Signing in cannot recover unavailable Plex.');
+    }
+    assert.equal((await fetch(`${base}/api/auth/login`)).status, 404);
+    assert.equal((await fetch(`${base}/api/auth/complete`, { method: 'POST' })).status, 404);
+  } finally { await close(); }
+});
+
+test('public network mode needs neither a sign-in link nor authentication routes', async () => {
+  const { server, close } = createApp({ plex: { canAccess: async () => true, streams: new Map(), stop: async () => {} } });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const session = await (await fetch(`${base}/api/session`)).json();
+    assert.equal(session.canHost, true);
+    for (const field of ['owner', 'plexLogin', 'loginUrl', 'loginLabel']) assert.equal(field in session, false);
+    assert.equal((await fetch(`${base}/api/auth/login`)).status, 404);
+    assert.equal((await fetch(`${base}/api/auth/complete`, { method: 'POST' })).status, 404);
+  } finally { await close(); }
+});
+
 test('one app address proxies LiveKit HTTP and WebSockets without forwarding login cookies', async () => {
   const upstream = http.createServer((req, res) => { res.end(JSON.stringify({ path: req.url, cookie: req.headers.cookie || null })); });
   const wss = new WebSocketServer({ server: upstream });

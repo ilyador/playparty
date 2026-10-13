@@ -32,7 +32,7 @@ const localNetwork = ip => {
   return ip === '::1' || /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || (ip.includes(':') && localIPv6.includes(ipv6Prefix(ip)));
 };
 
-export function createApp({ plex, authenticateOwner = async () => true, livekitKey, livekitSecret, livekitUrl, livekitInternalUrl = 'http://127.0.0.1:7880', origin, movieMbps = 70, roomName = 'playparty', recordProgress = true, logPlayback = () => {}, assetsRoot = path.join(root, 'dist') } = {}) {
+export function createApp({ plex, authenticateOwner = async () => true, loginUrl, livekitKey, livekitSecret, livekitUrl, livekitInternalUrl = 'http://127.0.0.1:7880', origin, movieMbps = 70, roomName = 'playparty', recordProgress = true, logPlayback = () => {}, assetsRoot = path.join(root, 'dist') } = {}) {
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
@@ -138,8 +138,9 @@ export function createApp({ plex, authenticateOwner = async () => true, livekitK
     res.json({ plex: plexReady, call: callReady });
   });
   app.get('/api/session', async (req, res) => {
-    const eligible = await canHost(req);
-    res.json({ canHost: eligible, state: party.snapshot() });
+    const plexReady = await plexAccess();
+    const eligible = plexReady && Boolean(await authenticateOwner(req.headers.cookie));
+    res.json({ canHost: eligible, ...(!eligible && plexReady && loginUrl ? { loginUrl } : {}), state: party.snapshot() });
   });
   app.use((req, res, next) => {
     if (!req.url.startsWith('/livekit/')) return next();
@@ -440,7 +441,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     livekit = spawn(path.join(root, 'bin', 'livekit-server'), ['--config', path.join(root, 'data', 'livekit.yaml')], { stdio: 'inherit' });
   }
   const { server, close } = createApp({
-    plex, authenticateOwner, origin,
+    plex, authenticateOwner, origin, loginUrl: authMode === 'external' ? process.env.AUTH_LOGIN_URL : undefined,
     livekitKey: process.env.LIVEKIT_API_KEY, livekitSecret: process.env.LIVEKIT_API_SECRET,
     livekitUrl: process.env.LIVEKIT_PUBLIC_URL || `${origin.replace(/^http/, 'ws')}/livekit`, livekitInternalUrl: process.env.LIVEKIT_INTERNAL_URL,
     movieMbps: Number(process.env.MOVIE_UPLOAD_MBPS || 70),

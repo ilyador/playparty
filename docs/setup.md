@@ -45,7 +45,9 @@ Playparty adjusts remote streams per viewer. Sustained slow downloads or bufferi
 
 ## Existing authentication provider
 
-The default `AUTH_MODE=network` lets anyone opening the app choose to host while the configured Plex server is accessible. To restrict host and library access through an existing login provider, set `AUTH_MODE=external`, `AUTH_URL`, and `AUTH_COOKIE_NAMES` (comma-separated cookie names) in `.env`. Sign in through that provider before opening Playparty; the app does not add a separate login flow. Guests still enter only their name.
+The default `AUTH_MODE=network` lets anyone opening the app choose to host while the configured Plex server is accessible. To restrict host and library access through an existing login provider, set `AUTH_MODE=external`, `AUTH_URL`, and `AUTH_COOKIE_NAMES` (comma-separated cookie names) in `.env`. Set `AUTH_LOGIN_URL` to the provider's login page to show **Sign in to host** when its session is missing. Guests still enter only their name.
+
+iPhone Home Screen apps store their cookies separately from Safari after installation. Serve the existing provider's login page and required login endpoints under Playparty's own origin through your reverse proxy, and use a relative `AUTH_LOGIN_URL` such as `/login`. Keep the provider's successful return on that same origin. This signs into the installed app without leaving it or adding another authentication system. Ordinary browser tabs continue to share their existing login. See [WebKit's explanation of web app cookies](https://webkit.org/blog/14787/webkit-features-in-safari-17-2/#web-apps).
 
 The server-side validation endpoint receives only the selected cookies and must return:
 

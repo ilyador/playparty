@@ -134,6 +134,7 @@ function app(plans, timers = { setInterval, clearInterval }, initialState, sessi
   return {
     rooms, sockets, render, movie, requests, joins, audioOutputs,
     hostChoice: () => find(node => node.type === 'input' && node.props.id === 'host', tree)?.props,
+    hostLogin: () => find(node => node.type === 'a' && node.props.className === 'host-login-link', tree)?.props,
     visibility(value) { document.visibilityState = value; events.dispatchEvent(new Event('visibilitychange')); render(); },
     player: () => find(node => node.type === 'player', tree)?.props,
     button: label => find(node => node.type === 'button' && node.props['aria-label'] === label, tree).props,
@@ -195,6 +196,25 @@ test('host choice stays hidden during discovery and clears when Plex access is l
   assert.equal(view.hostChoice().checked, false, 'Recovered access must not restore a stale host selection.');
   await view.join();
   assert.equal(view.joins[0].host, false);
+});
+
+test('external login stays in the app and disappears after its own session is authenticated', async t => {
+  const timer = clock();
+  let session = { canHost: false, loginUrl: '/login' };
+  const view = app([], timer, undefined, async () => session);
+  t.after(() => view.dispose());
+  await flush(); view.render();
+  assert.equal(view.hostChoice(), undefined);
+  assert.equal(view.hostLogin().href, '/login');
+  assert.equal(view.hostLogin().target, undefined, 'Home Screen login uses the app’s existing window and cookie store.');
+  session = { canHost: true, loginUrl: undefined };
+  timer.advance(5000); await flush(); view.render();
+  assert.equal(view.hostLogin(), undefined);
+  assert.equal(view.hostChoice().checked, false);
+  session = { canHost: false, loginUrl: undefined };
+  timer.advance(5000); await flush(); view.render();
+  assert.equal(view.hostChoice(), undefined);
+  assert.equal(view.hostLogin(), undefined, 'An unavailable server does not suggest an unrelated sign-in.');
 });
 
 test('failed discovery removes host choice and overlapping refreshes cannot overwrite newer access', async t => {
