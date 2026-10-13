@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { EventEmitter } from 'node:events';
 import ts from 'typescript';
-import { LocalAudioTrack, LocalVideoTrack, Room, RoomEvent, Track, setLogLevel } from 'livekit-client';
+import { DisconnectReason, LocalAudioTrack, LocalVideoTrack, Room, RoomEvent, Track, setLogLevel } from 'livekit-client';
 
 setLogLevel('silent');
 
@@ -40,7 +40,7 @@ function module(name, imports = {}, globals = {}) {
   return exports;
 }
 function app(plans, timers = { setInterval, clearInterval }, initialState) {
-  const slots = [], effects = [], rooms = [], sockets = [];
+  const slots = [], effects = [], rooms = [], sockets = [], requests = [];
   let cursor = 0, tree, identity = 0;
   const events = new EventTarget();
   const movie = { paused: false, pauses: 0, pause() { this.paused = true; this.pauses++; } };
@@ -108,7 +108,7 @@ function app(plans, timers = { setInterval, clearInterval }, initialState) {
     './types': {
       contentTitle: content => content.title,
       api: async () => ({ state, owner: false }),
-      post: async path => path === 'join' ? { identity: `person-${++identity}`, name: 'Test', owner: false, state, livekitUrl: '', token: '' } : {},
+      post: async path => { requests.push(path); return path === 'join' ? { identity: `person-${++identity}`, name: 'Test', owner: false, state, livekitUrl: '', token: '' } : {}; },
     },
   }, {
     localStorage: { getItem: () => 'Test', setItem() {} }, location: { search: '', protocol: 'http:', host: 'localhost' },
@@ -132,11 +132,12 @@ function app(plans, timers = { setInterval, clearInterval }, initialState) {
   }
   render();
   return {
-    rooms, sockets, render, movie,
+    rooms, sockets, render, movie, requests,
     visibility(value) { document.visibilityState = value; events.dispatchEvent(new Event('visibilitychange')); render(); },
     player: () => find(node => node.type === 'player', tree)?.props,
     button: label => find(node => node.type === 'button' && node.props['aria-label'] === label, tree).props,
     notice: () => find(node => node.props?.className === 'notice', tree)?.props.children[0].props.children,
+    joinError: () => find(node => node.props?.className === 'inline-error', tree)?.props.children,
     async join() { await find(node => node.type === 'form', tree).props.onSubmit({ preventDefault() {} }); render(); await flush(); render(); },
     async leave() { await this.button('Leave the call').onClick(); render(); await flush(); render(); },
     dispose() { for (const slot of slots) slot?.cleanup?.(); },
@@ -240,6 +241,26 @@ test('a terminal disconnect disposes pending startup and keeps device controls d
   assert.equal(view.button('Turn on microphone').disabled, true);
   assert.equal(view.rooms[0].localParticipant.trackPublications.size, 0);
   assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'ended'));
+  assert.equal(view.notice(), 'The call disconnected. Leave and rejoin to reconnect.');
+});
+
+test('terminal removal or state mismatch explains rejoining while transient call reconnect preserves capture', async t => {
+  for (const reason of [DisconnectReason.PARTICIPANT_REMOVED, DisconnectReason.STATE_MISMATCH]) await t.test(DisconnectReason[reason], async () => {
+    const initial = tracks(), view = app([{ capture: async () => initial }]);
+    try {
+      await view.join();
+      view.rooms[0].emit(RoomEvent.Reconnecting); view.render();
+      assert.equal(view.notice(), undefined);
+      assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'live'));
+      view.rooms[0].emit(RoomEvent.Reconnected); view.render();
+      assert.equal(view.notice(), undefined);
+      view.rooms[0].emit(RoomEvent.Disconnected, reason); await flush(); view.render();
+      assert.equal(view.notice(), 'The call disconnected. Leave and rejoin to reconnect.');
+      assert.equal(view.button('Mute microphone').disabled, true);
+      assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'ended'));
+      assert.deepEqual(view.requests, ['join'], 'A terminal call disconnect cannot automatically mutate the shared session.');
+    } finally { view.dispose(); }
+  });
 });
 
 test('native device recovery remains owned when leaving before or after the permission request', async t => {
@@ -289,7 +310,7 @@ test('old socket callbacks after rejoin preserve the new movie, clock and ping t
   old.onopen();
   old.onmessage({ data: JSON.stringify({ ...state, movie: { id: 'old-movie' }, position: 999, mediaVersion: 1 }) });
   old.onmessage({ data: JSON.stringify({ type: 'pong', serverTime: 0, sent: 0 }) });
-  old.onclose(); view.render();
+  old.onclose({ code: 4001 }); view.render();
   assert.deepEqual(view.player().state, before.state);
   assert.equal(view.player().clockOffset, before.clockOffset);
   assert.equal(view.player().connectionVersion, before.connectionVersion);
@@ -297,6 +318,31 @@ test('old socket callbacks after rejoin preserve the new movie, clock and ping t
   const sent = current.sent.length;
   timer.advance(6000); receive(current, state); timer.advance(4000);
   assert.equal(current.sent.length, sent + 1);
+});
+
+test('a superseded tab ends only its local call, never leaves the shared session, and can intentionally rejoin', async t => {
+  const timer = clock(), initial = tracks(), replacement = tracks();
+  const view = app([{ capture: async () => initial }, { capture: async () => replacement }], timer, movieState);
+  t.after(() => view.dispose());
+  await view.join();
+  const old = view.sockets[0]; open(old); receive(old); view.render();
+  assert.equal(view.rooms[0].requests.length, 1);
+  old.readyState = 3; old.onclose({ code: 4001 }); view.render(); await flush(); view.render();
+  assert.equal(view.joinError(), 'You joined in another tab.');
+  assert.equal(view.player(), undefined, 'A superseded tab returns to the name form.');
+  assert.equal(view.movie.paused, true);
+  assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'ended'));
+  assert.equal(view.rooms[0].disconnections, 1);
+  assert.deepEqual(view.requests, ['join'], 'The old tab cannot send Leave with the replacement tab’s shared cookie.');
+  timer.advance(20000); view.render();
+  assert.equal(view.sockets.length, 1, 'A superseded tab must not retry the state connection.');
+  await view.join();
+  const current = view.sockets[1]; open(current); receive(current); view.render();
+  assert.equal(view.joinError(), undefined);
+  assert.equal(view.player().stateFresh, true);
+  assert.ok(replacement.every(track => track.mediaStreamTrack.readyState === 'live'));
+  old.onclose({ code: 4001 }); view.render();
+  assert.equal(view.player().stateFresh, true, 'An old terminal close cannot evict a deliberately rejoined call.');
 });
 
 test('the state watchdog is local-only while snapshots arrive and keeps the existing ten-second ping', async t => {

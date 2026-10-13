@@ -142,13 +142,13 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     const member = party.join(req.body?.name, owner, guestIdentity);
     member.connected = false;
     party.ready.delete(member.id);
-    sockets.get(member.id)?.close();
+    sockets.get(member.id)?.close(4001, 'Joined in another tab');
     for (const [otherSid, otherMember] of sessions) {
       if (otherSid === sid || otherMember.id !== member.id) continue;
       sessions.delete(otherSid);
     }
     if (previous && previous.id !== member.id) {
-      sockets.get(previous.id)?.close();
+      sockets.get(previous.id)?.close(4001, 'Joined in another tab');
       party.members.delete(previous.id);
       await plex.stop(previous.id);
       if (closing) return res.status(503).json({ error: 'Playparty is restarting. Try again shortly.' });
@@ -297,7 +297,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
     }
     if (req.url !== '/events' || !currentMember(session) || !allowedOrigin) return socket.destroy();
     wss.handleUpgrade(req, socket, head, ws => {
-      sockets.get(session.id)?.close();
+      sockets.get(session.id)?.close(4001, 'Joined in another tab');
       sockets.set(session.id, ws);
       session.connected = true;
       session.lastSeen = Date.now();
@@ -325,7 +325,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
           }
           if (message.type === 'telemetry') {
             const metrics = playbackMetrics(message);
-            const diagnostic = metrics && (/^(capture-|microphone-|call-audio-|movie-audio)/.test(metrics.event) || ['seek-recovery', 'sync-recovery', 'state-stale'].includes(metrics.event));
+            const diagnostic = metrics && (/^(capture-|microphone-|call-audio-|movie-audio)/.test(metrics.event) || ['seek-recovery', 'sync-recovery', 'network-recovery', 'state-stale'].includes(metrics.event));
             if (diagnostic) {
               const now = Date.now();
               if (!session.deviceTelemetry || now - session.deviceTelemetry.since >= 1000) session.deviceTelemetry = { since: now, count: 0, seen: new Map() };
@@ -361,6 +361,7 @@ export function createApp({ plex, authenticateOwner, plexLogin, livekitKey, live
         sockets.get(member.id)?.close();
         sockets.delete(member.id);
         party.members.delete(member.id);
+        party.ready.delete(member.id);
         party.startIfReady();
         sessions.delete(sid);
         plex.stop(member.id).catch(() => {});

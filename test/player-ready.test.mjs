@@ -56,7 +56,7 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
   class Hls {
     static isSupported() { return engine === 'hls'; }
     static Events = { ERROR: 'error', BUFFER_APPENDED: 'buffer-appended', FRAG_LOADED: 'frag-loaded' };
-    static ErrorTypes = { MEDIA_ERROR: 'media-error' };
+    static ErrorTypes = { MEDIA_ERROR: 'media-error', NETWORK_ERROR: 'network-error' };
     handlers = new Map();
     recoveries = 0;
     stops = 0;
@@ -74,7 +74,7 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
     'react/jsx-runtime': { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
     './types': {
       api: async () => {
-        const result = await new Promise(resolve => requests.push(resolve));
+        const result = await new Promise((resolve, reject) => requests.push({ resolve, reject }));
         return result;
       },
       post: (route, body) => { posts.push({ route, body }); return new Promise(() => {}); },
@@ -127,10 +127,16 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
     emit: event => [...(listeners.get(event) || [])].forEach(callback => callback({ type: event })),
     tick: () => [...intervals].forEach(callback => callback()),
     control: label => find(tree, props => props?.['aria-label'] === label),
+    retry: () => find(tree, props => props?.children === 'Retry movie'),
     alert: () => find(tree, props => props?.role === 'alert'),
+    async failSource(error) {
+      assert.ok(requests.length, 'A source request must be pending.');
+      requests.shift().reject(error);
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+    },
     async loadSource() {
       assert.ok(requests.length, 'A source request must be pending.');
-      requests.shift()({ url: '/fixture', offset: 0, mediaVersion: party.mediaVersion, quality: 'Original video', remote: false, maxBitrate: 0, currentBitrate: 0, subtitleMode: 'none' });
+      requests.shift().resolve({ url: '/fixture', offset: 0, mediaVersion: party.mediaVersion, quality: 'Original video', remote: false, maxBitrate: 0, currentBitrate: 0, subtitleMode: 'none' });
       for (let i = 0; i < 12; i++) await Promise.resolve();
     },
     dispose: () => slots.forEach(slot => slot?.cleanup?.()),
@@ -144,6 +150,138 @@ function setup(clock = () => 1000) {
   party.select({ id: '1', title: 'Fixture', duration: 120, subtitles: [{ id: '9', label: 'English' }] });
   return { party, host, guest };
 }
+
+for (const status of [503, 200]) test(`temporary playback API ${status} failures retry at most once per thirty seconds and resume readiness`, async () => {
+  let now = 1000;
+  const { party, host, guest } = setup(() => now);
+  const player = mountPlayer(party, host);
+  try {
+    await player.failSource(Object.assign(new Error('Temporarily unavailable'), { status }));
+    player.render();
+    assert.ok(player.alert()); assert.equal(player.video.paused, true);
+    player.tick(); player.render();
+    assert.equal(player.pendingSources(), 1);
+    await player.failSource(Object.assign(new Error('Still unavailable'), { status }));
+    for (let i = 0; i < 5; i++) { now += 5000; player.tick(); player.render(); }
+    assert.equal(player.pendingSources(), 0, 'A persistent outage cannot create a source reload loop.');
+    now += 5000; player.tick(); player.render();
+    assert.equal(player.pendingSources(), 1);
+    await player.loadSource(); player.tick(); player.render();
+    assert.equal(player.alert(), undefined);
+    party.markReady(guest.id, party.mediaVersion); player.render();
+    now = party.updatedAt; player.tick();
+    assert.equal(player.video.paused, false);
+    assert.equal(player.samples.filter(sample => sample.event === 'network-recovery').length, 2);
+  } finally { player.dispose(); }
+});
+
+test('network recovery waits for a fresh room clock and a visible page', async () => {
+  const { party, host } = setup();
+  const player = mountPlayer(party, host);
+  try {
+    await player.failSource(new TypeError('Failed to fetch'));
+    player.setFresh(false); player.tick(); player.render();
+    assert.equal(player.pendingSources(), 0);
+    assert.equal(player.retry().disabled, true);
+    player.setHidden(true); player.setFresh(true); player.tick(); player.render();
+    assert.equal(player.pendingSources(), 0, 'A hidden failed source must not repeatedly start transcodes.');
+    player.setHidden(false); player.tick(); player.render();
+    assert.equal(player.pendingSources(), 1);
+  } finally { player.dispose(); }
+});
+
+test('a non-transient API error stays held until movie retry without recreating the player', async () => {
+  let now = 1000;
+  const { party, host } = setup(() => now);
+  const player = mountPlayer(party, host);
+  try {
+    await player.failSource(Object.assign(new Error('Not found'), { status: 404 }));
+    for (let i = 0; i < 10; i++) { now += 10000; player.tick(); player.render(); }
+    assert.equal(player.pendingSources(), 0);
+    assert.equal(player.video.paused, true);
+    assert.ok(player.retry());
+    const element = player.video;
+    player.retry().onClick(); player.render();
+    assert.equal(player.pendingSources(), 1);
+    assert.equal(player.video, element);
+    await player.loadSource(); player.tick(); player.render();
+    assert.equal(player.alert(), undefined);
+    assert.ok(party.ready.has(host.id));
+  } finally { player.dispose(); }
+});
+
+for (const engine of ['native', 'hls']) test(`${engine} network failure revokes readiness and recovers only its movie source`, async () => {
+  let now = 1000;
+  const { party, host, guest } = setup(() => now);
+  const player = mountPlayer(party, host, { engine });
+  try {
+    await player.loadSource(); player.tick(); party.markReady(guest.id, party.mediaVersion); player.render();
+    now = party.updatedAt; player.tick(); player.emit('playing');
+    assert.equal(party.paused, false);
+    if (engine === 'native') { player.video.error = { code: 2 }; player.emit('error'); }
+    else player.hlsInstances[0].emit('error', { fatal: true, type: 'network-error' });
+    assert.equal(party.paused, true, 'A fatal stream error must freeze the shared clock immediately.');
+    assert.equal(party.ready.has(host.id), false);
+    player.render(); player.tick(); player.render();
+    assert.equal(player.pendingSources(), 1);
+    assert.equal(player.video.paused, true);
+    await player.loadSource(); player.tick();
+    assert.ok(party.ready.has(host.id));
+    assert.equal(player.samples.filter(sample => sample.event === 'network-recovery').length, 1);
+  } finally { player.dispose(); }
+});
+
+test('a fatal failure while manually paused revokes readiness without auto-resuming the room', async () => {
+  let now = 1000;
+  const { party, host, guest } = setup(() => now);
+  const player = mountPlayer(party, host, { engine: 'hls' });
+  try {
+    await player.loadSource(); player.tick(); party.markReady(guest.id, party.mediaVersion); player.render();
+    now = party.updatedAt; player.tick(); player.emit('playing');
+    party.control('pause'); player.render(); player.tick();
+    player.hlsInstances[0].emit('error', { fatal: true, type: 'network-error' });
+    assert.equal(party.ready.has(host.id), false);
+    assert.ok(party.paused && !party.wantsPlay, 'A failure cannot undo an intentional pause.');
+    player.tick(); player.render();
+    await player.loadSource(); player.tick();
+    assert.ok(party.paused && !party.wantsPlay, 'A successful retry also preserves manual pause.');
+    party.control('play');
+    assert.ok(party.paused && party.wantsPlay, 'Play must request readiness for the new source.');
+    player.render(); player.tick();
+    assert.equal(party.paused, false);
+  } finally { player.dispose(); }
+});
+
+test('a fatal failure between initial readiness and future start revokes the already-sent ready', async () => {
+  const { party, host, guest } = setup();
+  const player = mountPlayer(party, host, { engine: 'hls' });
+  try {
+    await player.loadSource(); player.tick(); party.markReady(guest.id, party.mediaVersion); player.render();
+    assert.equal(party.paused, false);
+    assert.ok(party.clock() < party.updatedAt, 'The common future start has not arrived yet.');
+    for (let i = 0; i < 3; i++) player.hlsInstances[0].emit('error', { fatal: true, type: 'media-error' });
+    assert.equal(party.ready.has(host.id), false);
+    assert.ok(party.paused && party.wantsPlay, 'A failure after ready must hold the other viewer before future play.');
+    player.tick(); player.render();
+    assert.equal(player.pendingSources(), 0, 'A decode failure requires manual retry.');
+  } finally { player.dispose(); }
+});
+
+test('a subtitle source loaded while manually paused cannot inherit old ready state', async () => {
+  const { party, host, guest } = setup();
+  const player = mountPlayer(party, host);
+  try {
+    await player.loadSource(); player.tick(); party.markReady(guest.id, party.mediaVersion); player.render();
+    player.emit('playing'); party.control('pause'); player.render();
+    player.control('Subtitles').onChange({ target: { value: '9' } }); player.render();
+    assert.equal(party.ready.has(host.id), false);
+    assert.ok(party.paused && !party.wantsPlay);
+    party.control('play'); player.render(); player.tick();
+    assert.ok(party.paused && party.wantsPlay, 'An unloaded caption stream holds Play.');
+    await player.loadSource(); player.tick();
+    assert.equal(party.paused, false);
+  } finally { player.dispose(); }
+});
 
 test('a second buffering cycle gets fresh ready even when resume was shorter than one player poll', async () => {
   const { party, host, guest } = setup();
@@ -252,7 +390,7 @@ test('natural EOF stays finished until an explicit play requests fresh playback 
   } finally { player.dispose(); }
 });
 
-test('a native media failure exposes reconnect and removes its error listener on disposal', async () => {
+test('a native media failure exposes stream retry and removes its error listener on disposal', async () => {
   const { party, host } = setup();
   const player = mountPlayer(party, host);
   try {
@@ -262,7 +400,7 @@ test('a native media failure exposes reconnect and removes its error listener on
     player.video.error = { code: 3 };
     player.video.readyState = 0;
     player.emit('error'); player.render();
-    assert.ok(player.alert(), 'A native media error must expose the existing reconnect UI.');
+    assert.ok(player.retry(), 'A native media error must expose a movie retry without reloading the call.');
     assert.equal(player.samples.filter(sample => sample.event === 'fatal').length, 1);
   } finally { player.dispose(); }
   const count = player.samples.length;
@@ -270,7 +408,7 @@ test('a native media failure exposes reconnect and removes its error listener on
   assert.equal(player.samples.length, count, 'A disposed source cannot report another fatal error.');
 });
 
-test('repeated fatal Hls media failures stop after two recovery attempts and expose reconnect', async () => {
+test('repeated fatal Hls media failures stop after two recovery attempts and expose stream retry', async () => {
   const { party, host } = setup();
   const player = mountPlayer(party, host, { engine: 'hls' });
   try {

@@ -106,10 +106,22 @@ export default function App() {
         }
         if (message.type === 'pong') setClockOffset(message.serverTime - (Date.now() + message.sent) / 2);
       };
-      ws.onclose = () => {
+      ws.onclose = event => {
         if (disposed || leaveRef.current || socket.current !== ws) return;
         invalidateState();
         socket.current = null;
+        if (event?.code === 4001) {
+          // The shared browser cookie now belongs to the replacement tab.
+          // End this tab locally; a Leave request would evict its replacement.
+          leaveRef.current = true;
+          clearTimeout(reconnect);
+          captureSession.current?.dispose();
+          if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+          setFullscreen(false);
+          setJoined(null); setParticipants([]); setMic(false); setCamera(false); setSpeaking(false); setDevicesReady(false); setNotice(''); setAudioBlocked(false); setPicker(false);
+          setError('You joined in another tab.');
+          return;
+        }
         reconnect = setTimeout(connectEvents, 1500);
       };
     };
@@ -200,7 +212,10 @@ export default function App() {
     room.on(RoomEvent.Reconnected, () => { if (!disposed && !leaveRef.current) setConnection('Connected'); });
     room.on(RoomEvent.Disconnected, () => {
       capture.dispose();
-      if (!disposed && !leaveRef.current) { setDevicesReady(false); setSpeaking(false); setConnection('Disconnected'); }
+      if (!disposed && !leaveRef.current) {
+        setDevicesReady(false); setSpeaking(false); setConnection('Disconnected');
+        setNotice('The call disconnected. Leave and rejoin to reconnect.');
+      }
     });
     room.connect(joined.livekitUrl, joined.token).then(async () => {
       if (disposed || leaveRef.current) return;

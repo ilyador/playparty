@@ -86,7 +86,8 @@ export class Party {
   }
 
   buffering(id, version) {
-    if (version !== this.mediaVersion || !this.members.has(id) || !this.movie || (this.paused && !this.wantsPlay)) return false;
+    if (version !== this.mediaVersion || !this.members.has(id) || !this.movie) return false;
+    if (this.paused && !this.wantsPlay) return this.ready.delete(id);
     if (!this.paused) {
       this.position = this.currentPosition();
       this.paused = true;

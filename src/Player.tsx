@@ -41,6 +41,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   const syncHealth = useRef(syncWatchdog());
   const freshRef = useRef(stateFresh);
   const fatalPlayback = useRef(false);
+  const retryableFailure = useRef(false);
   const syncNow = useRef<() => void>(() => {});
   const connectionRef = useRef(connectionVersion);
   const adaptive = useRef<ReturnType<typeof createAdaptiveQuality> | null>(null);
@@ -95,9 +96,9 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       paused: element.paused, waiting: current.waiting, sharedPaused: current.paused, seeking: element.seeking, needsGesture: gestureRequired.current, renderer: renderer.current,
       captionTracks: element.textTracks.length, captionCues: captions.reduce((count, track) => count + (track.activeCues?.length || 0), 0), captionsShowing: captions.length > 0 });
   }
-  function holdForBuffer() {
+  function holdForBuffer(force = false) {
     const current = stateRef.current;
-    if (!freshRef.current || current.paused || bufferingReported.current || performance.now() - lastCorrection.current < 750) return;
+    if (!freshRef.current || (!force && (current.paused && !current.waiting || bufferingReported.current || performance.now() - lastCorrection.current < 750))) return;
     bufferingReported.current = true;
     report('waiting'); onBufferingRef.current(current.mediaVersion);
   }
@@ -181,12 +182,12 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
     let readyConnection = connectionRef.current;
     sourceGeneration.current += 1;
     seekHealth.current.reset();
-    syncHealth.current.reset(); fatalPlayback.current = false;
+    syncHealth.current.reset(); fatalPlayback.current = false; retryableFailure.current = false;
     lastCorrection.current = 0;
     pendingPlay.current = null;
     playback.current = null;
     bufferingReported.current = false;
-    if (freshRef.current && (!stateRef.current.paused || stateRef.current.waiting)) {
+    if (freshRef.current) {
       bufferingReported.current = true; report('waiting'); onBufferingRef.current(state.mediaVersion);
     }
     setError(''); setLoading(true); setGestureRequired(false);
@@ -195,8 +196,12 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
     const progress = () => { if (mustWait()) { element.pause(); return; } if (!element.paused) { setMediaPaused(false); if (gestureRequired.current) setGestureRequired(false); } };
     const visibility = () => { if (mustWait()) element.pause(); };
     const waiting = () => { setLoading(true); holdForBuffer(); };
-    const fatal = () => { fatalPlayback.current = true; syncHealth.current.reset(); element.pause(); report('fatal'); setError('The movie could not load. Try again.'); setLoading(false); };
-    const nativeError = () => { if (!abort.signal.aborted && renderer.current === 'native' && element.error) fatal(); };
+    const fatal = (retryable = false, message = 'The movie could not load. Try again.') => {
+      holdForBuffer(true);
+      fatalPlayback.current = true; retryableFailure.current = retryable;
+      syncHealth.current.reset(); element.pause(); report('fatal'); setError(message); setLoading(false);
+    };
+    const nativeError = () => { if (!abort.signal.aborted && renderer.current === 'native' && element.error) fatal(element.error.code === 2); };
     element.addEventListener('playing', playing);
     element.addEventListener('play', progress);
     element.addEventListener('timeupdate', progress);
@@ -261,7 +266,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
         hls.on(Hls.Events.ERROR, (_, data) => {
           if (!data.fatal || abort.signal.aborted) return;
           if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 2) { mediaRecoveries += 1; hls?.recoverMediaError(); }
-          else { hls?.stopLoad(); fatal(); }
+          else { hls?.stopLoad(); fatal(data.type === Hls.ErrorTypes.NETWORK_ERROR); }
         });
         hls.loadSource(result.url);
         hls.attachMedia(element);
@@ -273,7 +278,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
         element.textTracks.addEventListener('addtrack', nativeSubtitles);
         element.src = result.url;
       } else { setError('This browser cannot play this stream. Try Safari, Chrome or Edge.'); setLoading(false); }
-    }).catch(error => { if (!abort.signal.aborted) { setError(error.message); setLoading(false); } });
+    }).catch(error => { if (!abort.signal.aborted) fatal(error.status >= 500 || error.status === 408 || error.status === 200 || error.name === 'TypeError', error.message); });
     return () => { sourceGeneration.current += 1; pendingPlay.current = null; abort.abort(); readyCheck.current = () => {}; element.pause(); hls?.destroy(); if (nativeSubtitles) element.textTracks.removeEventListener('addtrack', nativeSubtitles); element.removeEventListener('canplay', markReady); element.removeEventListener('playing', playing); element.removeEventListener('play', progress); element.removeEventListener('timeupdate', progress); document.removeEventListener('visibilitychange', visibility); element.removeEventListener('waiting', waiting); element.removeEventListener('error', nativeError); element.removeAttribute('src'); element.load(); };
   }, [state.movie?.id, state.mediaVersion, subtitleId, adaptiveCap, sourceRetry]);
 
@@ -283,7 +288,15 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       const current = stateRef.current;
       if (!element) return;
       const timestamp = performance.now();
-      if (!freshRef.current || fatalPlayback.current) { element.pause(); syncHealth.current.reset(); seekHealth.current.reset(); return; }
+      if (!freshRef.current) { element.pause(); syncHealth.current.reset(); seekHealth.current.reset(); return; }
+      if (fatalPlayback.current) {
+        element.pause(); syncHealth.current.reset(); seekHealth.current.reset();
+        if (retryableFailure.current && !document.hidden && syncHealth.current.recover(timestamp)) {
+          retryableFailure.current = false;
+          report('network-recovery'); setSourceRetry(retry => retry + 1);
+        }
+        return;
+      }
       const seek = seekHealth.current.sample(timestamp, element.seeking, element.readyState >= 3 && (nativeReady(element) || ahead(element, element.currentTime) >= 4));
       if (seek.stalled) { setLoading(true); holdForBuffer(); }
       if (seek.reload && playback.current && !document.hidden && syncHealth.current.recover(timestamp)) {
@@ -379,7 +392,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   const duration = state.movie?.duration || 1;
   return <div className={`movie-player${controls || mediaPaused ? ' controls-visible' : ''}${keyboardControls ? ' keyboard-controls' : ''}${needsGesture && mediaPaused ? ' playback-blocked' : ''}`} ref={container} onPointerMove={showControls} onPointerDown={showControls} onClickCapture={() => { if (gestureRequired.current) playVideo(true); }} onFocusCapture={() => { setKeyboardControls(keyboardMode.current); showControls(); }}>
     {(loading || state.waiting) && !error && <div className="player-loading"><SpinnerGap className="spinner" size={30} /><span>{state.waiting && !loading ? 'Getting everyone in sync…' : 'Getting the movie ready…'}</span></div>}
-    {error && <div className="player-error" role="alert"><p>{error}</p><button className="secondary-button" onClick={() => { window.location.reload(); }}>Reconnect</button></div>}
+    {error && <div className="player-error" role="alert"><p>{error}</p><button className="secondary-button" disabled={!stateFresh} onClick={() => setSourceRetry(retry => retry + 1)}>Retry movie</button></div>}
     <div className="movie-topline"><div className="movie-title"><strong>{state.movie && contentTitle(state.movie)}</strong>{state.movie?.episodeDetails && <span>{state.movie.episodeDetails}</span>}</div><span className="quality-label">{quality}</span></div>
     <div className="movie-controls">
       <input className="seek" aria-label="Movie position" type="range" min="0" max={Math.max(0, duration - 1)} step="1" value={Math.min(position, duration)} disabled={!owner} onPointerDown={() => { seeking.current = true; }} onKeyDown={() => { seeking.current = true; }} onChange={event => setPosition(Number(event.target.value))} onPointerUp={event => { seeking.current = false; if (owner) control('seek', Number(event.currentTarget.value)); }} onPointerCancel={() => { seeking.current = false; }} onBlur={() => { seeking.current = false; }} onKeyUp={event => { seeking.current = false; if (owner && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) control('seek', Number(event.currentTarget.value)); }} style={{ '--progress': `${Math.min(100, position / duration * 100)}%` } as React.CSSProperties} />

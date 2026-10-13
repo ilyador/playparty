@@ -84,6 +84,13 @@ test('a slow transcode freezes the shared clock until every connected viewer buf
   party.markReady(guest.id, party.mediaVersion); assert.equal(party.paused, false);
   assert.equal(party.position, position);
   party.control('pause');
-  assert.equal(party.buffering(guest.id, party.mediaVersion), false);
+  assert.equal(party.buffering(guest.id, party.mediaVersion), true);
+  assert.equal(party.ready.has(guest.id), false, 'A failure while manually paused must revoke old readiness.');
   assert.equal(party.wantsPlay, false);
+  const pausedPosition = party.position;
+  party.control('play');
+  assert.ok(party.paused && party.wantsPlay, 'Play must wait for the failed viewer.');
+  assert.equal(party.position, pausedPosition);
+  party.markReady(guest.id, party.mediaVersion);
+  assert.equal(party.paused, false);
 });

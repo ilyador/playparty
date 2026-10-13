@@ -5,6 +5,25 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 import { createApp } from '../server/index.mjs';
 
+test('expired memberships release cached readiness and stop their streams', async () => {
+  const stopped = [];
+  const plex = { streams: new Map(), stop: async id => stopped.push(id) };
+  const { server, party, sessions, close } = createApp({ plex, authenticateOwner: async () => false, recordProgress: false });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const member = party.join('Expired viewer', false);
+    sessions.set('expired-fixture', member);
+    party.select({ id: 'fixture', duration: 120 });
+    party.markReady(member.id, party.mediaVersion);
+    member.lastSeen = Date.now() - 46000;
+    await delay(2200);
+    assert.equal(party.members.has(member.id), false);
+    assert.equal(sessions.has('expired-fixture'), false);
+    assert.equal(party.ready.has(member.id), false, 'Expiry must remove cached readiness as well as membership.');
+    assert.deepEqual(stopped, [member.id]);
+  } finally { await close(); }
+});
+
 test('replacement sockets and leaving invalidate old readiness even when the room is manually paused', async () => {
   const plex = { streams: new Map(), stop: async () => {} };
   const sockets = [];

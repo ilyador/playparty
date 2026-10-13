@@ -134,6 +134,36 @@ test('an owner switching browsers retires the old participant session', async ()
   } finally { for (const socket of sockets) socket.terminate(); await close(); }
 });
 
+test('same-cookie rejoins and duplicate state sockets explicitly supersede the old tab', async () => {
+  const plex = { streams: new Map(), stop: async () => {} };
+  const { server, party, close } = createApp({ plex, authenticateOwner: async () => false,
+    livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', recordProgress: false });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`, sockets = [];
+  let cookie;
+  const join = () => fetch(`${base}/api/join`, { method: 'POST', headers: { ...(cookie ? { Cookie: cookie } : {}), 'Content-Type': 'application/json' }, body: '{"name":"Guest"}' });
+  const connect = async () => {
+    const socket = new WebSocket(base.replace(/^http/, 'ws') + '/events', { headers: { Cookie: cookie } });
+    sockets.push(socket);
+    await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+    return socket;
+  };
+  const closed = socket => new Promise(resolve => socket.once('close', (code, reason) => resolve({ code, reason: reason.toString() })));
+  try {
+    const first = await join(); cookie = first.headers.get('set-cookie').split(';')[0];
+    const identity = (await first.json()).identity;
+    const firstSocket = await connect(), firstClosed = closed(firstSocket);
+    assert.equal((await join()).status, 200);
+    assert.deepEqual(await firstClosed, { code: 4001, reason: 'Joined in another tab' });
+    const secondSocket = await connect(), secondClosed = closed(secondSocket);
+    const thirdSocket = await connect();
+    assert.deepEqual(await secondClosed, { code: 4001, reason: 'Joined in another tab' });
+    assert.equal(thirdSocket.readyState, WebSocket.OPEN);
+    assert.equal(party.members.size, 1);
+    assert.ok(party.members.get(identity)?.connected, 'Closing an old tab cannot disconnect its replacement.');
+  } finally { for (const socket of sockets) socket.terminate(); await close(); }
+});
+
 test('leaving cancels waiting and in-flight streams before a returning participant starts another', async () => {
   let finishOld;
   let announceStart;

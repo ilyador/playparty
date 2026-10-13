@@ -39,7 +39,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api/${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } });
   let data;
   try { data = await response.json(); } catch {}
-  if (!response.ok || data == null) throw new Error(data?.error || 'The server is reconnecting. Try again in a moment.');
+  if (!response.ok || data == null) throw Object.assign(new Error(data?.error || 'The server is reconnecting. Try again in a moment.'), { status: response.status });
   return data;
 }
 

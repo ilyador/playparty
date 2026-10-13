@@ -9,7 +9,7 @@ test('playback telemetry accepts bounded measurements and excludes names, URLs a
   const result = playbackMetrics({ event: 'waiting', drift: -2.34567, position: 40, bufferAhead: 0, readyState: 2, paused: false, name: 'private', url: 'https://private/?token=secret', token: 'secret', target: Infinity });
   assert.deepEqual(result, { event: 'waiting', position: 40, drift: -2.346, bufferAhead: 0, readyState: 2, paused: false });
   assert.equal(playbackMetrics({ event: 'private arbitrary event' }), null);
-  for (const event of ['sync-recovery', 'state-stale']) assert.deepEqual(playbackMetrics({ event, drift: 3, token: 'private', url: 'https://private/' }), { event, drift: 3 });
+  for (const event of ['sync-recovery', 'network-recovery', 'state-stale']) assert.deepEqual(playbackMetrics({ event, drift: 3, token: 'private', url: 'https://private/' }), { event, drift: 3 });
   assert.deepEqual(playbackMetrics({ event: 'microphone-status', microphoneEnabled: false, microphoneReadyState: 'live', echoCancellation: true, deviceId: 'private device', microphonePermission: 'granted' }), { event: 'microphone-status', microphoneEnabled: false, echoCancellation: true, microphonePermission: 'granted', microphoneReadyState: 'live' });
   assert.deepEqual(playbackMetrics({ event: 'capture-error', captureError: 'private arbitrary error', cameraPermission: 'private detail' }), { event: 'capture-error' });
   assert.deepEqual(playbackMetrics({ event: 'call-audio-output', callAudioTracks: 1, callAudioElements: 1, callAudioPlaying: 1, callAudioDuplicates: 0, callAudioUnexpected: 100, participant: 'private person', sid: 'private track' }), { event: 'call-audio-output', callAudioTracks: 1, callAudioElements: 1, callAudioPlaying: 1, callAudioDuplicates: 0 });

@@ -88,6 +88,10 @@ Join authorizes the movie player during your tap, and the same video element is 
 
 Sync checks run locally in the existing player loop. If two ordinary corrections fail, Playparty restarts only the affected movie stream, with a 30-second cooldown. Pausing, buffering, seeking, and browser permission blocks do not trigger this recovery. If party updates stop arriving for eight seconds, that viewer's movie pauses while the party connection reconnects. Returning to the tab also requests current state. The video call stays connected.
 
+Temporary movie network failures and playback server errors retry the affected stream with the same cooldown. Other errors offer **Retry movie**, which keeps the call connected. A stream change or failure also revokes readiness while manually paused, so Play waits for a working stream. Joining in another tab ends the older tab's local session instead of letting the tabs repeatedly displace each other.
+
+Disconnected room membership expires after 45 seconds without contact. An expired viewer must leave and rejoin; the screen explains this when the call disconnects. Rejoining waits for fresh media and the current shared timeline.
+
 Private playback logs are written to `data/playback.log`, with two rotated files and a total limit of roughly 6 MB. They record stream decisions, buffer levels, playback drift, readiness, shared pauses/resumes, transcode measurements, and automatic sync recovery. Call diagnostics record actual microphone mute and applied processing, plus audio output counts to detect duplicate playback. They omit names, media titles, tokens, and stream URLs.
 
 ```sh
@@ -112,3 +116,13 @@ The browser check needs local Plex, LiveKit, and Chrome (`TEST_CHROME` overrides
 Private configuration, authentication keys, binaries, dependencies, builds, and local captures are excluded from Git. No media files, library history, or real account details are included in this repository.
 
 For repeated playback checks with four clients, run `node --disable-warning=ExperimentalWarning test/stress-browser.mjs`. It tests a slow remote connection, host and guest refreshes, repeated leave/rejoin, and abrupt tab closure. Each scenario requires ten continuous seconds of synchronized playback. Tests use separate parties and do not save Plex progress.
+
+Additional two-client fault checks use the same local services and isolated parties:
+
+| Command (run with `node --disable-warning=ExperimentalWarning`) | Checks |
+| --- | --- |
+| `test/network-fault-browser.mjs` | A 65-second movie HTTP outage, temporary/permanent playback API errors, and a disconnect long enough to expire membership. |
+| `test/control-race-browser.mjs` | Lost pause updates, leaving during a delayed load, rapid seeks, and Stop/reselection with late responses. |
+| `test/lifecycle-fault-browser.mjs` | Suspended tabs, foreground changes, and duplicate-tab takeover. |
+
+These use Chrome and fake capture devices. They cannot verify physical iPhone sleep, Safari permission behavior, acoustic echo, or restrictive-network WebRTC routing.
