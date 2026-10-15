@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setTimeout as delay, setImmediate as nextTurn } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { RoomServiceClient } from 'livekit-server-sdk';
 import { createApp } from '../server/index.mjs';
@@ -38,6 +38,19 @@ const until = async (check, message, timeout = 30000) => {
   const deadline = Date.now() + timeout;
   while (!(await check()) && Date.now() < deadline) await delay(100);
   assert.ok(await check(), message);
+};
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+};
+const within = async (promise, message) => {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), 30000);
+    })]);
+  } finally { clearTimeout(timer); }
 };
 const instrument = () => {
   const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices), NativeSocket = WebSocket, NativePeer = RTCPeerConnection, nativeFetch = fetch.bind(window);
@@ -107,8 +120,15 @@ const assertCall = async label => {
     assert.equal(state.mic, 1); assert.equal(state.camera, 1); assert.equal(state.outputs, others); assert.ok(state.peers > 0); assert.equal(state.stateSockets, 1);
   }
 };
+const callBytes = client => client.page.evaluate(async () => {
+  const reports = await Promise.all(window.testPeers.map(peer => peer.getStats().catch(() => new Map())));
+  return reports.reduce((total, report) => total + [...report.values()]
+    .filter(row => row.type === 'inbound-rtp' && row.kind === 'audio')
+    .reduce((sum, row) => sum + (row.bytesReceived || 0), 0), 0);
+});
 const assertStable = async label => {
   const deadline = Date.now() + 120000;
+  const initialCallBytes = await Promise.all(active().map(callBytes));
   let healthySince = 0, samples = 0, maxDrift = 0, maxSpread = 0, firstFrames, lastFrames, held;
   while (Date.now() < deadline && (!healthySince || Date.now() - healthySince < 10000)) {
     rememberProducers();
@@ -138,6 +158,9 @@ const assertStable = async label => {
   assert.ok(healthySince && Date.now() - healthySince >= 10000 && samples >= 15, `${label}: require ten continuous healthy seconds.`);
   assert.ok(lastFrames.every((frames, index) => frames > firstFrames[index]), `${label}: every browser must decode new video frames.`);
   await assertCall(label);
+  if (active().length > 1) for (const [index, client] of active().entries()) {
+    assert.ok(await callBytes(client) > initialCallBytes[index], `${label}: every browser must receive new call audio packets.`);
+  }
   console.log(JSON.stringify({ label, result: 'pass', viewers: active().length, samples, maxDrift: Number(maxDrift.toFixed(3)), maxSpread: Number(maxSpread.toFixed(3)), producers: plex.producers.size }));
 };
 
@@ -200,6 +223,59 @@ try {
   assert.equal(plex.streams.get(clients[0].identity).id, shared.id);
   await captioned.page.getByLabel('Subtitles', { exact: true }).selectOption('');
   await assertStable('Returning to matching captions rejoins shared output'); assertShared();
+  assert.equal(plex.streams.get(captioned.identity).id, shared.id);
+
+  phase = 'rapid subtitle replacement';
+  const previousAssignments = new Map(active().map(client => [client.identity, plex.streams.get(client.identity)]));
+  const gate = deferred(), firstEntered = deferred(), secondAdmitted = deferred(), secondClosed = deferred(), thirdAdmitted = deferred();
+  const originalStart = plex.start;
+  const reachedAdapter = [], admitted = [];
+  const actorSession = (await captioned.context.cookies(origin)).find(cookie => cookie.name === 'playparty_session').value;
+  const observePlayback = (req, res) => {
+    if (req.url !== '/api/playback' || cookies(req.headers.cookie).playparty_session !== actorSession) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      const number = admitted.push(JSON.parse(body).subtitleId);
+      if (number === 2) res.once('close', secondClosed.resolve);
+      // Express has admitted the parsed request into the playback queue by
+      // this turn; observation never changes production request handling.
+      await nextTurn();
+      if (number === 2) secondAdmitted.resolve();
+      if (number === 3) thirdAdmitted.resolve();
+    });
+  };
+  plex.start = async function (identity, selected, options) {
+    if (identity === captioned.identity) {
+      reachedAdapter.push(options.subtitleId);
+      if (reachedAdapter.length === 1) { firstEntered.resolve(); await gate.promise; }
+    }
+    return originalStart.call(this, identity, selected, options);
+  };
+  server.on('request', observePlayback);
+  try {
+    await captioned.page.getByLabel('Subtitles', { exact: true }).selectOption(subtitle.id);
+    await within(firstEntered.promise, 'The first subtitle request must enter the held adapter call.');
+    await captioned.page.getByLabel('Subtitles', { exact: true }).selectOption('');
+    await within(secondAdmitted.promise, 'The middle subtitle request must reach the server playback queue.');
+    await captioned.page.getByLabel('Subtitles', { exact: true }).selectOption(subtitle.id);
+    await within(secondClosed.promise, 'The real Player must abort its superseded middle subtitle request.');
+    await within(thirdAdmitted.promise, 'The final subtitle request must reach the server before startup resumes.');
+    assert.deepEqual(admitted, [subtitle.id, '', subtitle.id]);
+    assert.deepEqual(reachedAdapter, [subtitle.id], 'Queued subtitle requests cannot enter Plex while the first call is held.');
+    gate.resolve();
+    await assertStable('Rapid subtitle replacement keeps only the final live request'); assertShared(5, 2);
+    assert.deepEqual(reachedAdapter, [subtitle.id, subtitle.id], 'The abandoned middle request must never reach Plex.');
+    assert.equal(await captioned.page.evaluate(() => window.testPlayback.subtitleMode), 'segmented');
+    assert.notEqual(plex.streams.get(captioned.identity).id, shared.id);
+    for (const client of active().filter(client => client !== captioned)) {
+      assert.equal(plex.streams.get(client.identity), previousAssignments.get(client.identity), 'Rapid subtitle changes cannot replace another viewer’s assignment.');
+    }
+  } finally {
+    gate.resolve(); plex.start = originalStart; server.off('request', observePlayback);
+  }
+  await captioned.page.getByLabel('Subtitles', { exact: true }).selectOption('');
+  await assertStable('Final subtitle off rejoins the original output'); assertShared();
   assert.equal(plex.streams.get(captioned.identity).id, shared.id);
 
   phase = 'different codec profile';

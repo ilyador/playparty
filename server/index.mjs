@@ -307,8 +307,10 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
     const stillJoined = () => participant(req) === req.member && currentMember(req.member);
     const previous = playbackLocks.get(req.member.id) || Promise.resolve();
     const start = previous.catch(() => {}).then(async () => {
+      if (res.destroyed) throw Object.assign(new Error('The playback request was cancelled.'), { name: 'AbortError', status: 499 });
       if (!stillJoined()) throw Object.assign(new Error('Enter your name to join.'), { status: 401 });
       if (version !== party.mediaVersion) throw Object.assign(new Error('The movie changed. Reconnect to watch.'), { status: 409 });
+      const previousAssignment = plex.streams.get(req.member.id);
       const result = await plex.start(req.member.id, { ...party.movie, version }, {
         position: party.currentPosition(), hevc: req.body?.hevc === true, maxBitrate: currentBitrate, remote, adaptive: remote && currentBitrate < allowance,
         subtitleId: typeof req.body?.subtitleId === 'string' ? req.body.subtitleId : '',
@@ -319,11 +321,16 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
         if (!stillJoined()) throw Object.assign(new Error('Enter your name to join.'), { status: 401 });
         throw Object.assign(new Error('The movie changed. Reconnect to watch.'), { status: 409 });
       }
+      if (res.destroyed) {
+        if (assignment && assignment !== previousAssignment) await plex.stop(req.member.id, assignment);
+        throw Object.assign(new Error('The playback request was cancelled.'), { name: 'AbortError', status: 499 });
+      }
       return result;
     });
     playbackLocks.set(req.member.id, start);
     try {
       const result = await start;
+      if (res.destroyed) return;
       logPlayback({ event: 'stream-start', viewer: req.member.id, device: req.member.device, mediaVersion: version, position: party.currentPosition(), quality: result.quality, subtitleMode: result.subtitleMode, remote, maxBitrate: currentBitrate, qualityReason });
       const details = plex.streams.get(req.member.id)?.diagnostics;
       if (details) logPlayback({ event: 'stream-decision', viewer: req.member.id, mediaVersion: version, ...details });
@@ -349,7 +356,8 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
     } catch (error) {
       // An expired Plex session affects all its readers. A cancelled HTTP
       // response or an invalid Range belongs only to that one request.
-      if (!signal.aborted && assigned() && !req.headers.range && [404, 410].includes(error.upstreamStatus)) {
+      const canExpire = [404, 410].includes(error.upstreamStatus) || error.upstreamStatus >= 500 && error.upstreamStatus < 600;
+      if (!signal.aborted && assigned() && !req.headers.range && canExpire) {
         const lost = await plex.transcodeMetrics(req.member.id).then(metrics => metrics.available === false, () => false);
         if (lost && !signal.aborted && assigned()) await plex.invalidate(stream);
       }

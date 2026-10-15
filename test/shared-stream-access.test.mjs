@@ -20,7 +20,7 @@ const within = async (promise, message = 'The retired HTTP body was not cancelle
   })]); } finally { clearTimeout(timer); }
 };
 
-async function fixture() {
+async function fixture({ failureStatus = 404 } = {}) {
   const requests = [], expired = new Set(), missing = new Set();
   const bodyHolds = new Set();
   let hold, release, nextBody, nextMaster;
@@ -34,7 +34,7 @@ async function fixture() {
       await new Promise(resolve => { release = resolve; });
     }
     const session = url.searchParams.get('session') || url.pathname.split('/')[2];
-    if (expired.has(session) || missing.has(url.pathname)) { res.writeHead(404); res.end(); return; }
+    if (expired.has(session) || missing.has(url.pathname)) { res.writeHead(failureStatus); res.end(); return; }
     if (req.headers.range) { res.writeHead(416); res.end(); return; }
     if (url.pathname.endsWith('.m3u8')) {
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
@@ -222,6 +222,47 @@ test('one missing child playlist preserves every reader of a healthy output', as
     assert.equal((await f.get(f.guest, child)).status, 200);
     assert.equal((await f.playback(f.guest)).outputId, guest.outputId);
   } finally { await f.cleanup(); }
+});
+
+test('upstream server errors retire an output only when its Plex session is confirmed missing', async t => {
+  // Fault injection covers these statuses; the real encoder-crash check returned 404.
+  for (const failureStatus of [500, 503]) for (const health of ['missing', 'alive', 'unavailable']) {
+    await t.test(`${failureStatus}: session ${health}`, async () => {
+      const f = await fixture({ failureStatus });
+      try {
+        const [host, guest] = await Promise.all([f.playback(f.host), f.playback(f.guest)]);
+        const child = await f.childPlaylist(f.host, host.url);
+        const original = f.plex.streams.get(f.host.identity);
+        const target = new URL(f.plex.resources.get(child.split('/').at(-1)).target, f.plex.url).pathname;
+        f.missing.add(target);
+        if (health !== 'alive') f.expired.add(original.session);
+        if (health === 'unavailable') f.plex.transcodeMetrics = async () => { throw Error('Fixture session probe unavailable'); };
+
+        assert.equal((await f.get(f.guest, child)).status, 502);
+        if (health === 'missing') {
+          assert.equal(f.plex.streams.size, 0);
+          assert.equal(f.plex.producers.size, 0);
+          const replacement = await Promise.all([f.playback(f.host), f.playback(f.guest)]);
+          assert.equal(replacement[0].outputId, replacement[1].outputId);
+          assert.notEqual(replacement[0].outputId, host.outputId);
+          assert.equal((await f.get(f.host, await f.childPlaylist(f.host, replacement[0].url))).status, 200);
+          assert.equal(f.requests.filter(row => row.path.endsWith('/start.m3u8')).length, 2,
+            'Both affected viewers must share one replacement Plex start.');
+        } else {
+          assert.equal(f.plex.producers.size, 1);
+          assert.equal(f.plex.streams.size, 2);
+          assert.equal(f.plex.streams.get(f.host.identity), original);
+          const retry = await Promise.all([f.playback(f.host), f.playback(f.guest)]);
+          assert.equal(retry[0].outputId, host.outputId);
+          assert.equal(retry[1].outputId, guest.outputId);
+          f.missing.clear(); f.expired.clear();
+          assert.equal((await f.get(f.host, child)).status, 200,
+            'An otherwise healthy shared output remains usable after the temporary error clears.');
+          assert.equal(f.requests.filter(row => row.path.endsWith('/start.m3u8')).length, 1);
+        }
+      } finally { await f.cleanup(); }
+    });
+  }
 });
 
 test('leaving or changing profile cancels only that viewer’s outstanding segment body', async t => {
