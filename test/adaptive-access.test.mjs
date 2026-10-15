@@ -97,6 +97,11 @@ test('local owner and guests retain full quality while only connected remote vie
     assert.equal(shared.maxBitrate, 29750, 'Only the two connected remote seats divide the 85% upload allowance.');
     assert.equal(shared.currentBitrate, 29750);
     assert.equal(starts.at(-1).options.maxBitrate, 29750);
+    party.members.get(remote.identity).connected = false;
+    const refreshing = await playback(remote, {});
+    assert.equal(refreshing.currentBitrate, 29750, 'A refreshing requester counts before its events socket reconnects.');
+    assert.equal(starts.at(-1).options.adaptive, false);
+    party.members.get(remote.identity).connected = true;
     assert.equal(upstream.length, 3);
     assert.equal(upstream.every(row => row.target === '/fixture.ts'), true);
   } finally {

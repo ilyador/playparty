@@ -176,6 +176,11 @@ try {
   const shared = assignments()[0];
   assert.equal(new Set(assignments().map(stream => stream.session)).size, 1);
   assert.equal(new Set(assignments().map(stream => stream.client)).size, 1, 'All requests for one producer use its stable upstream client identity.');
+  const liveTranscodes = await plex.json('/transcode/sessions');
+  const liveRows = liveTranscodes.TranscodeSession ? Array.isArray(liveTranscodes.TranscodeSession) ? liveTranscodes.TranscodeSession : [liveTranscodes.TranscodeSession] : [];
+  const ownedRows = liveRows.filter(row => ownedSessions.has(String(row.id)) || [...ownedSessions].some(session => String(row.key || '').includes(session)));
+  assert.equal(ownedRows.length, 1, 'Five matching decoded players must have exactly one actual owned Plex output session.');
+  assert.ok(ownedRows.some(row => row.id === shared.session || String(row.key || '').includes(shared.session)), 'The actual Plex session must match the shared assignment.');
 
   phase = 'refresh and late rejoin';
   const returning = clients[4]; await leave(returning); await delay(2500);

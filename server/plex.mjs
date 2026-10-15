@@ -14,6 +14,7 @@ export class Plex {
     this.streams = new Map();
     this.producers = new Map();
     this.pendingStarts = new Map();
+    this.pendingRetirements = new Set();
   }
 
   headers(identity = 'playparty') {
@@ -139,7 +140,7 @@ export class Plex {
     return this.request(path);
   }
 
-  addResource(stream, target) {
+  addResource(stream, target, playlist) {
     if (stream.released || stream.retired || stream.producer?.retired) throw Object.assign(new Error('The stream expired. Reconnect to watch.'), { status: 410 });
     const parsed = new URL(target, this.url);
     if (parsed.origin !== this.url.origin) throw new Error('Unexpected Plex stream destination.');
@@ -149,7 +150,7 @@ export class Plex {
     const existing = stream.targets.get(targetPath);
     if (existing) return `/api/stream/${existing}`;
     const id = randomUUID();
-    this.resources.set(id, { streamId: stream.id, target: targetPath });
+    this.resources.set(id, { streamId: stream.id, target: targetPath, ...(playlist === undefined ? {} : { playlist }) });
     stream.targets.set(targetPath, id);
     stream.resourceIds.add(id);
     return `/api/stream/${id}`;
@@ -175,6 +176,7 @@ export class Plex {
   async release(assignment) {
     if (!assignment || assignment.released) return;
     assignment.released = true;
+    assignment.abort.abort();
     if (this.streams.get(assignment.identity) === assignment) this.streams.delete(assignment.identity);
     assignment.producer.leases.delete(assignment);
     if (!assignment.producer.leases.size) await this.invalidate(assignment);
@@ -199,13 +201,25 @@ export class Plex {
     producer.resourceIds.clear();
     for (const assignment of producer.leases) {
       assignment.released = true;
+      assignment.abort.abort();
       if (this.streams.get(assignment.identity) === assignment) this.streams.delete(assignment.identity);
     }
     producer.leases.clear();
-    producer.stopping = fetch(new URL(`/video/:/transcode/universal/stop?session=${encodeURIComponent(producer.session)}`, this.url), {
-      headers: this.headers(producer.client), signal: AbortSignal.timeout(3000),
-    }).then(response => response.arrayBuffer()).catch(() => {});
+    producer.stopping = (async () => {
+      // A stop that overtakes Plex's master request can leave a late encoder
+      // running. Drain that bounded request before sending the final stop.
+      await producer.starting?.catch(() => {});
+      const response = await fetch(new URL(`/video/:/transcode/universal/stop?session=${encodeURIComponent(producer.session)}`, this.url), {
+        headers: this.headers(producer.client), signal: AbortSignal.timeout(3000),
+      });
+      await response.arrayBuffer();
+    })().catch(() => {}).finally(() => this.pendingRetirements.delete(producer.stopping));
+    this.pendingRetirements.add(producer.stopping);
     return producer.stopping;
+  }
+
+  async drain() {
+    while (this.pendingRetirements.size) await Promise.all(this.pendingRetirements);
   }
 
   async transcodeMetrics(identity) {
@@ -272,8 +286,17 @@ export class Plex {
           const video = tracks.find(track => Number(track.streamType) === 1);
           output.diagnostics = { videoDecision: video?.decision, inputCodec: media?.videoCodec, maxBitrate: remote === false ? 0 : bitrate };
           const start = new URL(`/video/:/transcode/universal/start.m3u8?${params}`, this.url);
+          // Only this producer starts Plex. Browser master reads reuse its
+          // immutable playlist instead of issuing another start request.
+          output.starting = this.request(start.toString(), output.client, { signal: AbortSignal.timeout(20000) })
+            .then(response => response.text());
+          const playlist = await output.starting;
+          if (output.retired) throw Object.assign(new Error('The stream changed. Reconnect to watch.'), { status: 409 });
+          const playable = playlist.trimStart().startsWith('#EXTM3U') &&
+            playlist.split('\n').some(line => line.trim() && !line.trimStart().startsWith('#'));
+          if (!playable) throw Object.assign(new Error('Plex returned an invalid stream playlist. Try again.'), { status: 502 });
           return {
-            url: this.addResource(output, start.toString()),
+            url: this.addResource(output, start.toString(), playlist),
             outputId: output.id,
             offset: 0,
             quality: video?.decision === 'copy' ? 'Original video' : 'Optimized video',
@@ -285,6 +308,7 @@ export class Plex {
       const previous = this.streams.get(identity);
       const assignment = previous?.producer === producer && !previous.released ? previous : {
         identity, producer, id: producer.id, session: producer.session, client: producer.client, version: producer.version,
+        abort: new AbortController(),
         resourceIds: producer.resourceIds, targets: producer.targets, get diagnostics() { return producer.diagnostics; },
       };
       pending.assignment = assignment;

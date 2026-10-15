@@ -18,15 +18,30 @@ async function until(check) {
 }
 
 async function fixture(t) {
-  const decisions = [], stops = [], holds = new Map();
-  let decisionStatus = 200;
+  const decisions = [], starts = [], stops = [], events = [], active = new Set(), holds = new Map();
+  let decisionStatus = 200, startStatus = 200;
+  let masterBody = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\nindex.m3u8\n';
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://fixture.invalid');
-    const kind = url.pathname.startsWith('/library/metadata/') ? 'metadata' : url.pathname.endsWith('/decision') ? 'decision' : 'stop';
+    const kind = url.pathname.startsWith('/library/metadata/') ? 'metadata' : url.pathname.endsWith('/decision') ? 'decision' : url.pathname.endsWith('/start.m3u8') ? 'master' : 'stop';
+    events.push(kind);
     if (kind === 'decision') decisions.push({ url, client: req.headers['x-plex-client-identifier'] });
-    if (kind === 'stop') stops.push({ session: url.searchParams.get('session'), client: req.headers['x-plex-client-identifier'] });
+    if (kind === 'master') starts.push({ url, client: req.headers['x-plex-client-identifier'] });
+    if (kind === 'stop') {
+      stops.push({ session: url.searchParams.get('session'), client: req.headers['x-plex-client-identifier'] });
+      active.delete(url.searchParams.get('session'));
+    }
     const hold = holds.get(kind);
     if (hold) { holds.delete(kind); hold.entered.resolve(); await hold.release.promise; }
+    if (kind === 'master') {
+      res.writeHead(startStatus, { 'Content-Type': 'application/vnd.apple.mpegurl' });
+      const bodyHold = holds.get('master-body');
+      if (bodyHold) { holds.delete('master-body'); res.flushHeaders(); bodyHold.entered.resolve(); await bodyHold.release.promise; }
+      if (startStatus === 200) active.add(url.searchParams.get('session'));
+      events.push('master-complete');
+      res.end(masterBody);
+      return;
+    }
     const body = kind === 'metadata' ? { MediaContainer: { Metadata: [{ ratingKey: url.pathname.split('/').at(-1), Media: [{ videoCodec: 'hevc', Part: [{ key: '/fixture/media', Stream: [
       { id: '11', streamType: 3, codec: 'srt' }, { id: '12', streamType: 3, codec: 'srt' }, { id: '13', streamType: 3, codec: 'pgs' },
     ] }] }] }] } } : { MediaContainer: { Metadata: [{ Media: [{ Part: [{ Stream: [{ streamType: 1, decision: 'transcode' }] }] }] }] } };
@@ -40,19 +55,23 @@ async function fixture(t) {
   t.after(async () => {
     for (const hold of allHolds) hold.release.resolve();
     await Promise.all([...new Set([...plex.streams.keys(), ...plex.pendingStarts.keys()])].map(id => plex.stop(id)));
+    await plex.drain();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   });
-  return { plex, decisions, stops,
+  return { plex, decisions, starts, stops, events, active,
     failDecision(status) { decisionStatus = status; },
+    failStart(status) { startStatus = status; },
+    setMasterBody(body) { masterBody = body; },
     hold(kind) { const hold = { entered: deferred(), release: deferred() }; holds.set(kind, hold); allHolds.push(hold); return hold; },
   };
 }
 
-test('five matching viewers share one Plex decision, stable resources and a frozen start offset', async t => {
-  const { plex, decisions, stops } = await fixture(t);
+test('five matching viewers share one Plex start, stable resources and a frozen start offset', async t => {
+  const { plex, decisions, starts, stops } = await fixture(t);
   const results = await Promise.all(Array.from({ length: 5 }, (_, i) => plex.start(`viewer-${i}`, movie, { ...profile, position: 20 + i })));
   assert.equal(decisions.length, 1);
+  assert.equal(starts.length, 1);
   assert.equal(new Set(results.map(result => result.url)).size, 1);
   assert.equal(new Set(results.map(result => result.outputId)).size, 1);
   assert.doesNotThrow(() => JSON.stringify(results), 'Playback responses must not contain internal producer state.');
@@ -61,10 +80,13 @@ test('five matching viewers share one Plex decision, stable resources and a froz
   assert.equal(new Set(assignments.map(stream => stream.producer)).size, 1);
   assert.equal(new Set(assignments.map(stream => stream.client)).size, 1);
   assert.equal(decisions[0].client, assignments[0].client);
+  assert.equal(starts[0].client, assignments[0].client);
+  assert.equal(plex.resources.get(results[0].url.split('/').at(-1)).playlist, '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\nindex.m3u8\n');
   const firstOffset = decisions[0].url.searchParams.get('offset');
   const later = await plex.start('late-viewer', movie, { ...profile, position: 600 });
   assert.equal(later.url, results[0].url);
   assert.equal(decisions.length, 1, 'Late joining must not restart or seek Plex.');
+  assert.equal(starts.length, 1, 'Late joining cannot send another Plex start request.');
   const upstream = new URL(plex.resources.get(later.url.split('/').at(-1)).target, plex.url);
   assert.equal(upstream.searchParams.get('offset'), firstOffset);
   assert.equal(upstream.searchParams.get('copyts'), '1');
@@ -76,13 +98,14 @@ test('five matching viewers share one Plex decision, stable resources and a froz
 });
 
 test('a sole viewer refresh reuses its assignment and only its final departure stops Plex', async t => {
-  const { plex, decisions, stops } = await fixture(t);
+  const { plex, decisions, starts, stops } = await fixture(t);
   const first = await plex.start('viewer', movie, profile);
   const assignment = plex.streams.get('viewer');
   const refreshed = await plex.start('viewer', movie, { ...profile, position: 90 });
   assert.equal(refreshed.url, first.url);
   assert.equal(plex.streams.get('viewer'), assignment);
   assert.equal(decisions.length, 1);
+  assert.equal(starts.length, 1);
   assert.equal(stops.length, 0);
   await plex.stop('viewer');
   assert.equal(stops.length, 1);
@@ -195,6 +218,108 @@ test('last departure during a pending shared decision retires it once and cannot
   assert.equal(f.plex.streams.get('a').id, replacement.outputId);
 });
 
+test('retirement and drain wait for a pending master body before stopping Plex, without late resources', async t => {
+  const f = await fixture(t);
+  const hold = f.hold('master-body');
+  const starting = f.plex.start('viewer', movie, profile);
+  const rejected = assert.rejects(starting, { status: 409 });
+  await hold.entered.promise;
+  const assignment = f.plex.pendingStarts.get('viewer').assignment;
+  let stopped = false;
+  const stopping = f.plex.stop('viewer').then(() => { stopped = true; });
+  let drained = false;
+  const draining = f.plex.drain().then(() => { drained = true; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(assignment.abort.signal.aborted, true);
+  assert.equal(assignment.producer.retired, true);
+  assert.equal(f.plex.producers.size, 0);
+  assert.equal(f.plex.resources.size, 0);
+  assert.equal(f.stops.length, 0, 'Stop must not overtake Plex startup.');
+  assert.equal(stopped, false);
+  assert.equal(drained, false, 'Shutdown must still await a producer removed from the live maps.');
+  assert.equal(f.plex.pendingRetirements.size, 1);
+  hold.release.resolve();
+  await Promise.all([rejected, stopping, draining]);
+  assert.equal(f.stops.length, 1);
+  assert.ok(f.events.indexOf('master-complete') < f.events.indexOf('stop'));
+  assert.equal(f.active.size, 0, 'The last upstream action must retire the session created by the delayed start.');
+  assert.equal(f.plex.pendingStarts.size, 0);
+  assert.equal(f.plex.streams.size, 0);
+  assert.equal(f.plex.resources.size, 0);
+  assert.equal(f.plex.pendingRetirements.size, 0);
+});
+
+test('one departure during the shared master start cancels only that viewer lease', async t => {
+  const f = await fixture(t);
+  const hold = f.hold('master');
+  const a = f.plex.start('a', movie, profile);
+  const rejectedA = assert.rejects(a, { status: 409 });
+  await hold.entered.promise;
+  const b = f.plex.start('b', movie, profile);
+  await until(() => f.plex.pendingStarts.get('b')?.assignment);
+  const oldA = f.plex.pendingStarts.get('a').assignment;
+  const oldB = f.plex.pendingStarts.get('b').assignment;
+  await f.plex.stop('a');
+  await rejectedA;
+  assert.equal(oldA.abort.signal.aborted, true);
+  assert.equal(oldB.abort.signal.aborted, false);
+  assert.equal(oldB.producer.abort.signal.aborted, false);
+  assert.equal(f.stops.length, 0);
+  hold.release.resolve();
+  await b;
+  assert.equal(f.starts.length, 1);
+  await f.plex.invalidate(oldB);
+  assert.equal(oldB.abort.signal.aborted, true);
+  assert.equal(oldB.producer.abort.signal.aborted, true);
+  assert.equal(f.stops.length, 1);
+});
+
+test('a failed coalesced master start preserves the previous output and retries with a fresh producer', async t => {
+  const f = await fixture(t);
+  await f.plex.start('a', movie, profile);
+  const working = f.plex.streams.get('a');
+  const hold = f.hold('master');
+  f.failStart(500);
+  const a = f.plex.start('a', movie, { ...profile, maxBitrate: 4000 });
+  const rejectedA = assert.rejects(a, { status: 502, upstreamStatus: 500 });
+  await hold.entered.promise;
+  const b = f.plex.start('b', movie, { ...profile, maxBitrate: 4000 });
+  const rejectedB = assert.rejects(b, { status: 502, upstreamStatus: 500 });
+  await until(() => f.plex.pendingStarts.get('b')?.assignment);
+  hold.release.resolve();
+  await Promise.all([rejectedA, rejectedB]);
+  assert.equal(f.plex.streams.get('a'), working);
+  assert.equal(working.abort.signal.aborted, false);
+  assert.equal(f.plex.producers.size, 1);
+  assert.equal(f.stops.length, 1);
+  assert.equal(f.starts.length, 2);
+  f.failStart(200);
+  await f.plex.start('b', movie, { ...profile, maxBitrate: 4000 });
+  assert.equal(f.starts.length, 3);
+  assert.equal(f.plex.streams.get('a'), working);
+});
+
+test('HTTP 200 invalid master responses retire cleanly and allow a valid retry', async t => {
+  for (const [label, body] of [['empty', ''], ['HTML', '<html>Temporary upstream error</html>'], ['header only', '#EXTM3U\n']]) await t.test(label, async t => {
+    const f = await fixture(t);
+    await f.plex.start('viewer', movie, profile);
+    const working = f.plex.streams.get('viewer');
+    f.setMasterBody(body);
+    await assert.rejects(f.plex.start('viewer', movie, { ...profile, maxBitrate: 4000 }), { status: 502 });
+    assert.equal(f.plex.streams.get('viewer'), working);
+    assert.equal(working.abort.signal.aborted, false);
+    assert.equal(f.plex.producers.size, 1);
+    assert.equal(f.plex.resources.size, 1, 'The invalid master must not leave a published resource.');
+    assert.equal(f.stops.length, 1);
+    f.setMasterBody('  \n#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4000000\nindex.m3u8\n');
+    const retry = await f.plex.start('viewer', movie, { ...profile, maxBitrate: 4000 });
+    assert.notEqual(retry.outputId, working.id);
+    assert.equal(f.plex.streams.get('viewer').id, retry.outputId);
+    assert.equal(f.starts.length, 3, 'A valid retry starts a fresh producer instead of reusing the invalid master.');
+    assert.equal(f.plex.producers.size, 1);
+  });
+});
+
 test('a failed shared startup keeps the previous working output and permits a clean retry', async t => {
   const f = await fixture(t);
   await f.plex.start('a', movie, profile);
@@ -240,12 +365,12 @@ test('confirmed output loss retires all assignments once, without touching a lat
   assert.equal(plex.resources.has(replacement.url.split('/').at(-1)), true);
 });
 
-test('metadata and shared decision deadlines remain bounded when cancellation is supported', async t => {
+test('metadata, decision, and master headers/body deadlines remain bounded', async t => {
   const originalTimeout = AbortSignal.timeout;
   AbortSignal.timeout = milliseconds => originalTimeout(milliseconds === 20000 ? 100 : milliseconds);
   t.after(() => { AbortSignal.timeout = originalTimeout; });
-  const f = await fixture(t);
-  for (const kind of ['metadata', 'decision']) {
+  for (const kind of ['metadata', 'decision', 'master', 'master-body']) {
+    const f = await fixture(t);
     const hold = f.hold(kind);
     const started = performance.now();
     await assert.rejects(f.plex.start('viewer', movie, profile), { name: 'TimeoutError' });

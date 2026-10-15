@@ -297,7 +297,7 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
   });
   app.post('/api/playback', requireMember, async (req, res) => {
     if (!party.movie) return res.status(404).json({ error: 'The host has not chosen anything yet.' });
-    const count = Math.max(1, [...party.members.values()].filter(m => m.connected && !m.local).length);
+    const count = Math.max(1, [...party.members.values()].filter(m => !m.local && (m.connected || m === req.member)).length);
     const remote = !req.member.local;
     const allowance = remote ? Math.max(1500, Math.floor(Number(movieMbps) * 1000 * 0.85 / count)) : 0;
     const requested = req.body?.maxBitrate;
@@ -337,18 +337,21 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
     if (!resource || !stream || resource.streamId !== stream.id || stream.version !== party.mediaVersion) return res.sendStatus(404);
     const assigned = () => currentMember(req.member) && participant(req) === req.member &&
       plex.streams.get(req.member.id) === stream && stream.version === party.mediaVersion;
+    if (resource.playlist !== undefined) {
+      return res.type('application/vnd.apple.mpegurl').send(plex.rewritePlaylist(resource.playlist, new URL(resource.target, plex.url), stream));
+    }
     const abort = new AbortController();
     res.on('close', () => abort.abort());
+    const signal = AbortSignal.any([abort.signal, stream.abort?.signal, stream.producer?.abort?.signal].filter(Boolean));
     let upstream;
     try {
-      upstream = await plex.request(resource.target, stream.client, { signal: abort.signal, headers: req.headers.range ? { Range: req.headers.range } : {} });
+      upstream = await plex.request(resource.target, stream.client, { signal, headers: req.headers.range ? { Range: req.headers.range } : {} });
     } catch (error) {
       // An expired Plex session affects all its readers. A cancelled HTTP
       // response or an invalid Range belongs only to that one request.
-      if (!abort.signal.aborted && assigned() && !req.headers.range && [404, 410].includes(error.upstreamStatus)) {
-        const lost = /\.m3u8(?:\?|$)/i.test(resource.target) ||
-          await plex.transcodeMetrics(req.member.id).then(metrics => metrics.available === false, () => false);
-        if (lost && !abort.signal.aborted && assigned()) await plex.invalidate(stream);
+      if (!signal.aborted && assigned() && !req.headers.range && [404, 410].includes(error.upstreamStatus)) {
+        const lost = await plex.transcodeMetrics(req.member.id).then(metrics => metrics.available === false, () => false);
+        if (lost && !signal.aborted && assigned()) await plex.invalidate(stream);
       }
       throw error;
     }
@@ -365,8 +368,8 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
       const value = upstream.headers.get(header);
       if (value) res.setHeader(header, value);
     }
-    if (req.member.local) await pipeline(Readable.fromWeb(upstream.body), res);
-    else await pipeline(Readable.fromWeb(upstream.body), budget.limiter(), res);
+    if (req.member.local) await pipeline(Readable.fromWeb(upstream.body), res, { signal });
+    else await pipeline(Readable.fromWeb(upstream.body), budget.limiter(), res, { signal });
   });
 
   server.on('upgrade', (req, socket, head) => {
@@ -483,6 +486,7 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
     await finishRetirement();
     await Promise.allSettled([...playbackLocks.values()]);
     await Promise.all([progress, ...[...plex.streams.keys()].map(id => plex.stop(id))]);
+    await plex.drain?.();
     sessions.clear();
     await closed;
   })();

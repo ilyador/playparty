@@ -9,6 +9,7 @@ function fixture() {
     { id: '9', streamType: 3, codec: 'pgs' },
   ] }] }] });
   plex.stop = async () => {};
+  plex.request = async () => new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\nindex.m3u8\n');
   plex.json = async path => {
     const url = new URL(path, plex.url);
     requests.push(url);

@@ -700,6 +700,7 @@ test('subtitle choices belong to the selected media and use text renditions or i
   assert.equal(JSON.stringify(publicItem).includes('/private'), false);
   plex.metadata = async () => item;
   plex.stop = async () => {};
+  plex.request = async () => new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\nindex.m3u8\n');
   let params;
   plex.json = async path => {
     params = new URL(path, plex.url).searchParams;
