@@ -16,7 +16,7 @@ const playerCode = ts.transpileModule(fs.readFileSync(new URL('../src/Player.tsx
 function mountPlayer(party, member, { currentTime = party.position, bufferedEnd = 16, bufferedRanges = [[0, bufferedEnd]], engine = 'native' } = {}) {
   const slots = [], pendingEffects = [], intervals = new Set(), requests = [], ready = [], buffering = [], posts = [];
   const listeners = new Map();
-  const samples = [], hlsInstances = [];
+  const samples = [], hlsInstances = [], sourceRequests = [];
   let cursor = 0;
   let tree;
   let stateFresh = true;
@@ -31,7 +31,7 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
       listeners.get(event).add(callback);
     },
     removeEventListener(event, callback) { listeners.get(event)?.delete(callback); },
-    remove() {}, removeAttribute() {}, load() { this.ended = false; },
+    remove() {}, removeAttribute() {}, load() { this.ended = false; this.error = null; },
     pause() { this.paused = true; },
     play() { this.playCalls++; this.paused = false; return Promise.resolve(); },
     canPlayType: () => 'probably',
@@ -61,7 +61,7 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
     handlers = new Map();
     recoveries = 0;
     stops = 0;
-    constructor() { hlsInstances.push(this); }
+    constructor(config) { this.config = config; hlsInstances.push(this); }
     on(event, callback) { this.handlers.set(event, callback); }
     emit(event, data) { this.handlers.get(event)?.(event, data); }
     loadSource() {}
@@ -74,7 +74,8 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
     react: hooks,
     'react/jsx-runtime': { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
     './types': {
-      api: async () => {
+      api: async (_route, options) => {
+        sourceRequests.push(JSON.parse(options.body));
         const result = await new Promise((resolve, reject) => requests.push({ resolve, reject }));
         return result;
       },
@@ -121,7 +122,7 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
   };
   render();
   return {
-    video, ready, buffering, posts, samples, hlsInstances, render,
+    video, ready, buffering, posts, samples, hlsInstances, sourceRequests, render,
     setFresh: value => { stateFresh = value; render(); },
     setHidden: value => { hidden = value; },
     pendingSources: () => requests.length,
@@ -151,6 +152,56 @@ function setup(clock = () => 1000) {
   party.select({ id: '1', title: 'Fixture', duration: 120, subtitles: [{ id: '9', label: 'English' }] });
   return { party, host, guest };
 }
+
+test('a replacement Hls source starts at the current room clock', async () => {
+  let now = 1000;
+  const { party, host, guest } = setup(() => now);
+  party.select({ ...party.movie, duration: 1200, resumePosition: 600 });
+  const player = mountPlayer(party, host, { engine: 'hls', currentTime: 600, bufferedRanges: [[600, 620]] });
+  try {
+    await player.loadSource(); player.tick();
+    assert.equal(player.hlsInstances[0].config.startPosition, 600);
+    party.markReady(guest.id, party.mediaVersion); player.render();
+    now = party.updatedAt + 139000;
+    player.control('Subtitles').onChange({ target: { value: '9' } }); player.render();
+    await player.loadSource();
+    assert.equal(player.hlsInstances[1].config.startPosition, 739, 'An existing producer’s original 600-second playlist start cannot determine a returning viewer’s first fragment.');
+  } finally { player.dispose(); }
+});
+
+test('a paused Hls source establishes its first frame before clock alignment', async () => {
+  const { party, host } = setup();
+  party.select({ ...party.movie, duration: 1200, resumePosition: 12.348 });
+  party.control('pause');
+  const player = mountPlayer(party, host, { engine: 'hls', currentTime: 0, bufferedRanges: [[12.1415, 43.2313]] });
+  try {
+    player.video.readyState = 1;
+    await player.loadSource(); player.tick();
+    assert.equal(player.video.currentTime, 0, 'Room alignment must not interrupt Hls while its initial seek has only metadata.');
+    assert.equal(player.hlsInstances[0].config.startOnSegmentBoundary, true);
+    player.video.currentTime = 12.1415;
+    player.video.readyState = 2; player.tick();
+    assert.equal(player.video.paused, true);
+    assert.equal(player.ready.length, 0, 'Establishing the initial frame must preserve a manual pause.');
+  } finally { player.dispose(); }
+});
+
+test('a buffered seek with no decoded frame retries compatible video at the same quality', async () => {
+  let now = 1000;
+  const { party, host } = setup(() => now);
+  party.select({ ...party.movie, duration: 1200, resumePosition: 12.348 });
+  const player = mountPlayer(party, host, { engine: 'hls', currentTime: 12.348, bufferedRanges: [[12.1415, 43.2313]] });
+  try {
+    player.video.getVideoPlaybackQuality = () => ({ totalVideoFrames: 0 });
+    await player.loadSource();
+    player.video.seeking = true;
+    player.tick();
+    now += 8100; player.tick(); player.render();
+    assert.equal(player.pendingSources(), 1);
+    assert.deepEqual(player.sourceRequests[1], { ...player.sourceRequests[0], forceTranscode: true });
+    assert.equal(player.video.paused, true, 'The room must stay held during source recovery.');
+  } finally { player.dispose(); }
+});
 
 for (const gap of [0.103333, 1.103333]) test(`readiness treats a ${gap.toFixed(3)}-second mux gap according to playable buffer`, async () => {
   const { party, host, guest } = setup();
@@ -294,7 +345,8 @@ test('a fatal failure between initial readiness and future start revokes the alr
     assert.equal(party.ready.has(host.id), false);
     assert.ok(party.paused && party.wantsPlay, 'A failure after ready must hold the other viewer before future play.');
     player.tick(); player.render();
-    assert.equal(player.pendingSources(), 0, 'A decode failure requires manual retry.');
+    assert.equal(player.pendingSources(), 1, 'A decode failure requests independently encoded segments for this viewer.');
+    assert.equal(player.sourceRequests.at(-1).forceTranscode, true);
   } finally { player.dispose(); }
 });
 
@@ -421,14 +473,14 @@ test('natural EOF stays finished until an explicit play requests fresh playback 
   } finally { player.dispose(); }
 });
 
-test('a native media failure exposes stream retry and removes its error listener on disposal', async () => {
+test('an unsupported native source exposes stream retry and removes its error listener on disposal', async () => {
   const { party, host } = setup();
   const player = mountPlayer(party, host);
   try {
     await player.loadSource();
     player.emit('error'); player.render();
     assert.equal(player.alert(), undefined, 'An old queued error event without a current MediaError is harmless.');
-    player.video.error = { code: 3 };
+    player.video.error = { code: 4 };
     player.video.readyState = 0;
     player.emit('error'); player.render();
     assert.ok(player.retry(), 'A native media error must expose a movie retry without reloading the call.');
@@ -439,7 +491,7 @@ test('a native media failure exposes stream retry and removes its error listener
   assert.equal(player.samples.length, count, 'A disposed source cannot report another fatal error.');
 });
 
-test('repeated fatal Hls media failures stop after two recovery attempts and expose stream retry', async () => {
+test('repeated Hls decoder failures try independent segments at the same quality once, then expose retry', async () => {
   const { party, host } = setup();
   const player = mountPlayer(party, host, { engine: 'hls' });
   try {
@@ -449,10 +501,32 @@ test('repeated fatal Hls media failures stop after two recovery attempts and exp
     player.render();
     assert.equal(hls.recoveries, 2);
     assert.equal(hls.stops, 1);
+    assert.equal(player.pendingSources(), 1);
+    assert.deepEqual(player.sourceRequests[1], { ...player.sourceRequests[0], forceTranscode: true }, 'Compatibility changes do not lower the requested quality or alter subtitles.');
+    assert.equal(player.samples.filter(sample => sample.event === 'fatal').length, 0);
+    await player.loadSource();
+    for (let i = 0; i < 3; i++) player.hlsInstances[1].emit('error', { fatal: true, type: 'media-error' });
+    player.render();
+    assert.equal(player.pendingSources(), 0, 'A failed compatible source must not loop through new encoders.');
     assert.ok(player.alert(), 'A persistent fatal error cannot remain an endless spinner.');
     assert.equal(player.samples.filter(sample => sample.event === 'fatal').length, 1);
     player.video.error = { code: 3 }; player.emit('error');
     assert.equal(player.samples.filter(sample => sample.event === 'fatal').length, 1, 'The native handler must not duplicate Hls errors.');
+  } finally { player.dispose(); }
+});
+
+test('native decoder recovery changes only compatibility and cannot loop', async () => {
+  const { party, host } = setup();
+  const player = mountPlayer(party, host);
+  try {
+    await player.loadSource();
+    player.video.error = { code: 3 }; player.emit('error'); player.render();
+    assert.equal(player.pendingSources(), 1);
+    assert.deepEqual(player.sourceRequests[1], { ...player.sourceRequests[0], forceTranscode: true });
+    await player.loadSource();
+    player.video.error = { code: 3 }; player.emit('error'); player.render();
+    assert.equal(player.pendingSources(), 0);
+    assert.ok(player.retry());
   } finally { player.dispose(); }
 });
 

@@ -5,7 +5,7 @@ import { WebSocket } from 'ws';
 import { createApp } from '../server/index.mjs';
 import { MovieBudget } from '../server/bandwidth.mjs';
 
-test('local owner and guests retain full quality while only connected remote viewers share the upload allowance', async () => {
+test('local viewers retain original quality and remote initial quality does not depend on arrival order', async () => {
   const starts = [];
   const upstream = [];
   const sockets = [];
@@ -75,7 +75,7 @@ test('local owner and guests retain full quality while only connected remote vie
 
     const full = await playback(remote, { remote: false, maxBitrate: 999999999 });
     assert.equal(full.remote, true, 'A request body cannot override the connection classification.');
-    assert.equal(full.maxBitrate, 59500, 'Connected local seats do not divide the remote allowance.');
+    assert.equal(full.maxBitrate, 59500, 'The initial remote ceiling depends only on the server upload budget.');
     assert.equal(full.currentBitrate, 59500);
     assert.equal(starts.at(-1).options.remote, true);
     assert.equal(starts.at(-1).options.maxBitrate, 59500);
@@ -91,15 +91,20 @@ test('local owner and guests retain full quality while only connected remote vie
     assert.equal(starts.at(-1).options.adaptive, true);
     assert.equal(starts.at(-1).options.subtitleId, '9');
 
-    await join('Second remote guest', '198.51.100.11');
+    const second = await join('Second remote guest', '198.51.100.11');
     await join('Disconnected remote guest', '198.51.100.12', false, false);
     const shared = await playback(remote, {});
-    assert.equal(shared.maxBitrate, 29750, 'Only the two connected remote seats divide the 85% upload allowance.');
-    assert.equal(shared.currentBitrate, 29750);
-    assert.equal(starts.at(-1).options.maxBitrate, 29750);
+    assert.equal(shared.maxBitrate, 59500, 'New viewers do not lower the existing viewer’s quality ceiling.');
+    assert.equal(shared.currentBitrate, 59500);
+    assert.equal(starts.at(-1).options.maxBitrate, 59500);
+    const arriving = await playback(second, {});
+    assert.equal(arriving.currentBitrate, 59500, 'A later viewer requests the same initial profile.');
+    const stillReduced = await playback(remote, { maxBitrate: 4000 });
+    assert.equal(stillReduced.currentBitrate, 4000, 'A viewer’s adaptive reduction remains independent.');
+    assert.equal(party.snapshot().remoteViewers, 2, 'The live viewer count is only a hint for real congestion.');
     party.members.get(remote.identity).connected = false;
     const refreshing = await playback(remote, {});
-    assert.equal(refreshing.currentBitrate, 29750, 'A refreshing requester counts before its events socket reconnects.');
+    assert.equal(refreshing.currentBitrate, 59500, 'Refreshing before the events socket reconnects does not change quality.');
     assert.equal(starts.at(-1).options.adaptive, false);
     party.members.get(remote.identity).connected = true;
     assert.equal(upstream.length, 3);

@@ -125,6 +125,7 @@ export class Party {
       readinessVersion: this.readinessVersion,
       waiting: this.wantsPlay,
       hostPresent: [...this.members.values()].some(m => m.owner && m.connected),
+      remoteViewers: [...this.members.values()].filter(m => m.connected && !m.local).length,
       participants: [...this.members.values()].filter(m => m.connected).map(({ id, name, owner }) => ({ id, name, owner })),
     };
   }

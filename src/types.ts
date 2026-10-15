@@ -24,6 +24,7 @@ export type PartyState = {
   readinessVersion: number;
   waiting: boolean;
   hostPresent: boolean;
+  remoteViewers: number;
   participants: Member[];
 };
 export type Joined = {

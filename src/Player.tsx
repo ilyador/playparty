@@ -9,7 +9,7 @@ import { seekWatchdog } from './seek-watchdog';
 import { syncWatchdog } from './sync-watchdog';
 import { createAdaptiveQuality, type QualityReason } from './adaptive-quality';
 
-type Playback = { url: string; offset: number; quality: string; mediaVersion: number; subtitleMode: 'none' | 'segmented' | 'burn'; remote: boolean; maxBitrate: number; currentBitrate: number };
+type Playback = { url: string; offset: number; quality: string; mediaVersion: number; subtitleMode: 'none' | 'segmented' | 'burn'; remote: boolean; maxBitrate: number; currentBitrate: number; bandwidth?: number };
 const maxBufferGap = 0.2;
 const time = (value: number) => {
   const seconds = Math.max(0, Math.floor(value || 0));
@@ -38,6 +38,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   const [stopping, setStopping] = useState(false);
   const [adaptiveCap, setAdaptiveCap] = useState<number | undefined>();
   const [sourceRetry, setSourceRetry] = useState(0);
+  const [forceTranscode, setForceTranscode] = useState(false);
   const seekHealth = useRef(seekWatchdog());
   const syncHealth = useRef(syncWatchdog());
   const freshRef = useRef(stateFresh);
@@ -55,9 +56,11 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   const renderer = useRef<'hls' | 'native'>('hls');
   const audio = useRef<ReturnType<typeof movieAudio> | null>(null);
   const readyCheck = useRef<() => void>(() => {});
+  const recoverDecoder = useRef<() => boolean>(() => false);
   const bufferingReported = useRef(false);
   const lastCorrection = useRef(0);
   const lastSample = useRef(0);
+  const lastAdaptivePosition = useRef(0);
   const onBufferingRef = useRef(onBuffering);
   const onTelemetryRef = useRef(onTelemetry);
   stateRef.current = state;
@@ -90,6 +93,11 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
     // Native HLS can report HAVE_FUTURE_DATA without exposing its internal
     // buffered ranges. Requiring TimeRanges there prevents playback starting.
     return renderer.current === 'native' && element.buffered.length === 0 && element.readyState >= 3;
+  }
+  function canAlign(element: HTMLVideoElement) {
+    // Hls must establish its first decoded frame before room alignment can
+    // interrupt its initial seek; native HLS still needs metadata-time seeking.
+    return element.readyState >= (renderer.current === 'hls' ? 2 : 1);
   }
   function report(event: string) {
     const element = video.current;
@@ -187,6 +195,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
     let readyVersion = state.readinessVersion;
     let readyConnection = connectionRef.current;
     sourceGeneration.current += 1;
+    lastAdaptivePosition.current = 0;
     seekHealth.current.reset();
     syncHealth.current.reset(); fatalPlayback.current = false; retryableFailure.current = false;
     lastCorrection.current = 0;
@@ -207,7 +216,22 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       fatalPlayback.current = true; retryableFailure.current = retryable;
       syncHealth.current.reset(); element.pause(); report('fatal'); setError(message); setLoading(false);
     };
-    const nativeError = () => { if (!abort.signal.aborted && renderer.current === 'native' && element.error) fatal(element.error.code === 2); };
+    const decoderFallback = () => {
+      if (forceTranscode) return false;
+      holdForBuffer(true);
+      fatalPlayback.current = true;
+      retryableFailure.current = false;
+      element.pause();
+      hls?.stopLoad();
+      setForceTranscode(true);
+      return true;
+    };
+    recoverDecoder.current = decoderFallback;
+    const nativeError = () => {
+      if (abort.signal.aborted || renderer.current !== 'native' || !element.error) return;
+      if (element.error.code === 3 && decoderFallback()) return;
+      fatal(element.error.code === 2);
+    };
     element.addEventListener('playing', playing);
     element.addEventListener('play', progress);
     element.addEventListener('timeupdate', progress);
@@ -230,7 +254,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       if (!wasWaiting) { readySent = false; wasWaiting = true; }
       const target = Math.max(0, current.position - offsetRef.current);
       const needed = Math.min(4, Math.max(0.2, (current.movie?.duration || Infinity) - current.position - 0.1));
-      if (!playback.current || element.readyState < 1 || gestureRequired.current) return;
+      if (!playback.current || !canAlign(element) || gestureRequired.current) return;
       if (!element.seeking && Math.abs(element.currentTime - target) > 0.35) {
         if (performance.now() - lastCorrection.current >= 2000) { lastCorrection.current = performance.now(); element.currentTime = target; }
         return;
@@ -244,12 +268,13 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
     const mediaSource = (globalThis as typeof globalThis & { ManagedMediaSource?: typeof MediaSource }).ManagedMediaSource || globalThis.MediaSource;
     const hevcType = 'video/mp4; codecs="hvc1.1.6.L153.B0"';
     const hevc = mediaSource ? mediaSource.isTypeSupported(hevcType) : Boolean(element.canPlayType(hevcType));
-    api<Playback>('playback', { method: 'POST', body: JSON.stringify({ hevc, subtitleId, maxBitrate: adaptiveCap, qualityReason: qualityReason.current }), signal: abort.signal }).then(async result => {
+    api<Playback>('playback', { method: 'POST', body: JSON.stringify({ hevc, subtitleId, forceTranscode, maxBitrate: adaptiveCap, qualityReason: qualityReason.current }), signal: abort.signal }).then(async result => {
       if (abort.signal.aborted) return;
       const { default: Hls } = await import('hls.js');
       if (abort.signal.aborted) return;
       playback.current = result; offsetRef.current = result.offset;
-      const configuration = { remote: result.remote, maxBitrate: result.maxBitrate, currentBitrate: result.currentBitrate };
+      const configuration = { remote: result.remote, maxBitrate: result.maxBitrate, currentBitrate: result.currentBitrate,
+        measuredTransfers: Hls.isSupported(), originalBitrate: result.bandwidth };
       if (!adaptive.current) adaptive.current = createAdaptiveQuality({ ...configuration, onChange: (bitrate, reason) => {
         qualityReason.current = reason;
         onTelemetryRef.current({ event: 'quality-change', maxBitrate: bitrate, qualityReason: reason });
@@ -259,7 +284,10 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       setQuality(result.quality);
       if (Hls.isSupported()) {
         renderer.current = 'hls';
-        hls = new Hls({ maxBufferLength: 16, maxMaxBufferLength: 30, backBufferLength: 8, maxBufferHole: maxBufferGap, enableWorker: true, manifestLoadingTimeOut: 30000, levelLoadingTimeOut: 30000, fragLoadingTimeOut: 30000 });
+        // A shared playlist retains its producer's original EXT-X-START.
+        // Load at this viewer's current clock before the first fragment arrives.
+        const startPosition = Math.max(0, positionAt(stateRef.current, Date.now() + clockRef.current) - result.offset);
+        hls = new Hls({ startPosition, startOnSegmentBoundary: true, maxBufferLength: 16, maxMaxBufferLength: 30, backBufferLength: 8, maxBufferHole: maxBufferGap, enableWorker: true, manifestLoadingTimeOut: 30000, levelLoadingTimeOut: 30000, fragLoadingTimeOut: 30000 });
         // Plex marks the requested rendition DEFAULT=YES. Let Hls select it
         // after the active subtitle group exists, rather than during parsing.
         hls.subtitleDisplay = result.subtitleMode === 'segmented';
@@ -272,6 +300,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
         hls.on(Hls.Events.ERROR, (_, data) => {
           if (!data.fatal || abort.signal.aborted) return;
           if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 2) { mediaRecoveries += 1; hls?.recoverMediaError(); }
+          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && decoderFallback()) return;
           else { hls?.stopLoad(); fatal(data.type === Hls.ErrorTypes.NETWORK_ERROR); }
         });
         hls.loadSource(result.url);
@@ -285,8 +314,8 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
         element.src = result.url;
       } else { setError('This browser cannot play this stream. Try Safari, Chrome or Edge.'); setLoading(false); }
     }).catch(error => { if (!abort.signal.aborted) fatal(error.status >= 500 || error.status === 408 || error.status === 200 || error.name === 'TypeError', error.message); });
-    return () => { sourceGeneration.current += 1; pendingPlay.current = null; abort.abort(); readyCheck.current = () => {}; element.pause(); hls?.destroy(); if (nativeSubtitles) element.textTracks.removeEventListener('addtrack', nativeSubtitles); element.removeEventListener('canplay', markReady); element.removeEventListener('playing', playing); element.removeEventListener('play', progress); element.removeEventListener('timeupdate', progress); document.removeEventListener('visibilitychange', visibility); element.removeEventListener('waiting', waiting); element.removeEventListener('error', nativeError); element.removeAttribute('src'); element.load(); };
-  }, [state.movie?.id, state.mediaVersion, subtitleId, adaptiveCap, sourceRetry]);
+    return () => { sourceGeneration.current += 1; pendingPlay.current = null; abort.abort(); readyCheck.current = () => {}; recoverDecoder.current = () => false; element.pause(); hls?.destroy(); if (nativeSubtitles) element.textTracks.removeEventListener('addtrack', nativeSubtitles); element.removeEventListener('canplay', markReady); element.removeEventListener('playing', playing); element.removeEventListener('play', progress); element.removeEventListener('timeupdate', progress); document.removeEventListener('visibilitychange', visibility); element.removeEventListener('waiting', waiting); element.removeEventListener('error', nativeError); element.removeAttribute('src'); element.load(); };
+  }, [state.movie?.id, state.mediaVersion, subtitleId, adaptiveCap, sourceRetry, forceTranscode]);
 
   useEffect(() => {
     const synchronize = () => {
@@ -312,8 +341,11 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       const seek = seekHealth.current.sample(timestamp, element.seeking, seekHasData);
       if (seek.stalled) { setLoading(true); holdForBuffer(); }
       if (seek.reload && playback.current && !document.hidden && syncHealth.current.recover(timestamp)) {
-        report('seek-recovery');
         seekHealth.current.reset();
+        // Some engines expose buffered copied media without reporting a decode
+        // error. A seek with future data but no decoded frame is the same failure.
+        if (element.getVideoPlaybackQuality?.().totalVideoFrames === 0 && recoverDecoder.current()) return;
+        report('seek-recovery');
         setSourceRetry(retry => retry + 1);
         return;
       }
@@ -328,7 +360,11 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
         return;
       }
       const wantsPlayback = !current.paused || current.waiting;
-      adaptive.current?.sample({ playing: wantsPlayback, seeking: element.seeking || seeking.current, bufferAhead: ahead(element, element.currentTime), stalled: wantsPlayback && element.readyState < 3 });
+      const advancing = !element.paused && element.currentTime > lastAdaptivePosition.current && element.currentTime - lastAdaptivePosition.current < 2;
+      lastAdaptivePosition.current = element.currentTime;
+      adaptive.current?.sample({ playing: wantsPlayback, advancing, seeking: element.seeking || seeking.current,
+        bufferAhead: ahead(element, element.currentTime), stalled: wantsPlayback && element.readyState < 3,
+        stallBitrate: (playback.current?.maxBitrate || 0) / Math.max(1, current.remoteViewers || 1) });
       const now = Date.now() + clockRef.current;
       const desired = Math.max(0, positionAt(current, now) - offsetRef.current);
       const eligible = !current.paused && !current.waiting && now >= current.updatedAt && !element.paused && !gestureRequired.current && !seeking.current && !document.hidden && element.readyState >= 3 && (nativeReady(element) || ahead(element, element.currentTime) >= 4);
@@ -337,7 +373,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       }
       if (current.paused || now < current.updatedAt) {
         if (!element.paused) element.pause();
-        if (!current.waiting && !element.seeking && ahead(element, desired) > 0.2 && Math.abs(element.currentTime - desired) > 0.35 && performance.now() - lastCorrection.current >= 2000) {
+        if (!current.waiting && canAlign(element) && !element.seeking && ahead(element, desired) > 0.2 && Math.abs(element.currentTime - desired) > 0.35 && performance.now() - lastCorrection.current >= 2000) {
           lastCorrection.current = performance.now(); element.currentTime = desired;
         }
         if (!seeking.current) setPosition(element.currentTime + offsetRef.current);

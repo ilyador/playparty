@@ -97,6 +97,30 @@ test('five matching viewers share one Plex start, stable resources and a frozen 
   assert.equal(stops.length, 0);
 });
 
+test('master bandwidth reports the highest advertised rendition demand independently of its requested cap', async t => {
+  const cases = [
+    ['single rendition', '#EXT-X-STREAM-INF:BANDWIDTH=20379000,RESOLUTION=3840x2160\nindex.m3u8', 20379],
+    ['multiple renditions and unrelated attributes', '#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=999999999,URI="iframe.m3u8"\n#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=999999999,BANDWIDTH=3538000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5998000,AVERAGE-BANDWIDTH=4000000\nhigh.m3u8', 5998],
+    ['fractional kilobits', '#EXT-X-STREAM-INF:BANDWIDTH=7502500\nindex.m3u8', 7502.5],
+    ['no advertised bandwidth', '#EXT-X-STREAM-INF:RESOLUTION=1920x1080\nindex.m3u8', undefined],
+    ['average is not peak bandwidth', '#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=5998000\nindex.m3u8', undefined],
+    ['invalid bandwidth', '#EXT-X-STREAM-INF:BANDWIDTH=Infinity\nindex.m3u8', undefined],
+    ['malformed numeric bandwidth', '#EXT-X-STREAM-INF:BANDWIDTH=5998000oops\nindex.m3u8', undefined],
+    ['negative bandwidth', '#EXT-X-STREAM-INF:BANDWIDTH=-1\nindex.m3u8', undefined],
+    ['zero bandwidth', '#EXT-X-STREAM-INF:BANDWIDTH=0\nindex.m3u8', undefined],
+    ['overflowing bandwidth', `#EXT-X-STREAM-INF:BANDWIDTH=${'9'.repeat(400)}\nindex.m3u8`, undefined],
+  ];
+  for (const [name, body, bandwidth] of cases) await t.test(name, async t => {
+    const f = await fixture(t);
+    f.setMasterBody(`#EXTM3U\n${body}\n`);
+    const first = await f.plex.start('viewer', movie, { ...profile, maxBitrate: 127500 });
+    const shared = await f.plex.start('late-viewer', movie, { ...profile, maxBitrate: 127500 });
+    assert.equal(first.bandwidth, bandwidth);
+    assert.equal(shared.bandwidth, bandwidth, 'Shared viewers receive the same producer bandwidth estimate.');
+    assert.equal(f.starts.length, 1, 'Reading bandwidth cannot restart the producer.');
+  });
+});
+
 test('a sole viewer refresh reuses its assignment and only its final departure stops Plex', async t => {
   const { plex, decisions, starts, stops } = await fixture(t);
   const first = await plex.start('viewer', movie, profile);
@@ -159,6 +183,21 @@ test('sharing respects codecs, subtitle selection, effective resolution, movie g
   const newMovie = await plex.start('new-movie', { ...movie, id: '2' }, profile);
   assert.notEqual(newGeneration.outputId, outputs[0].outputId);
   assert.notEqual(newMovie.outputId, outputs[0].outputId);
+});
+
+test('decoder recovery shares matching encoded outputs without changing the original viewers or quality', async t => {
+  const { plex, decisions, stops } = await fixture(t);
+  const initial = await plex.start('healthy', movie, profile);
+  const healthy = plex.streams.get('healthy');
+  const encoded = await plex.start('recovered-a', movie, { ...profile, forceTranscode: true });
+  const shared = await plex.start('recovered-b', movie, { ...profile, forceTranscode: true });
+  assert.notEqual(encoded.outputId, initial.outputId);
+  assert.equal(shared.outputId, encoded.outputId);
+  assert.equal(plex.streams.get('healthy'), healthy);
+  assert.equal(decisions.length, 2);
+  assert.deepEqual(decisions.map(row => row.url.searchParams.get('directStream')), ['1', '0']);
+  assert.ok(decisions.every(row => row.url.searchParams.get('maxVideoBitrate') === String(profile.maxBitrate)));
+  assert.equal(stops.length, 0, 'Recovering viewers cannot retire a healthy original output.');
 });
 
 test('departure during metadata cancels startup without creating an output later', async t => {

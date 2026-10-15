@@ -12,7 +12,7 @@ import { cookies } from '../server/auth.mjs';
 
 const port = Number(process.env.TEST_SHARED_REMOTE_PORT || 5185), origin = `http://localhost:${port}`;
 const roomName = `playparty-shared-remote-${randomUUID()}`, ownerCookie = randomUUID();
-const movieMbps = 8, initialCap = Math.floor(movieMbps * 1000 * 0.85 / 2);
+const movieMbps = 150, initialCap = Math.floor(movieMbps * 1000 * 0.85);
 const plex = new Plex({ url: process.env.PLEX_URL, preferences: process.env.PLEX_PREFERENCES, token: process.env.PLEX_TOKEN });
 const simplify = plex.simplify.bind(plex);
 plex.simplify = item => ({ ...simplify(item), resumePosition: 0 });
@@ -46,6 +46,11 @@ const instrument = () => {
   window.WebSocket = class extends NativeSocket { constructor(...args) { super(...args); window.testSockets.push(this); } };
   window.RTCPeerConnection = class extends NativePeer { constructor(...args) { super(...args); window.testPeers.push(this); } };
   window.fetch = async (...args) => {
+    // Exercise real video conversion even on Chrome builds that decode HEVC.
+    // Only codec support changes; normal quality and adaptive requests remain.
+    if (args[0] === '/api/playback' && typeof args[1]?.body === 'string') {
+      args[1] = { ...args[1], body: JSON.stringify({ ...JSON.parse(args[1].body), hevc: false }) };
+    }
     const response = await nativeFetch(...args);
     if (new URL(response.url).pathname === '/api/playback' && response.ok) window.testPlayback = await response.clone().json();
     return response;
@@ -79,7 +84,8 @@ const actualOutputCount = async expected => {
 const sample = () => {
   const video = document.querySelector('.movie-video');
   return video ? { present: true, time: video.currentTime + (window.testPlayback?.offset || 0), at: Date.now(), paused: video.paused,
-    ready: video.readyState, width: video.videoWidth, rate: video.playbackRate, frames: video.getVideoPlaybackQuality().totalVideoFrames,
+    ready: video.readyState, seeking: video.seeking, error: video.error?.code, buffered: [...Array(video.buffered.length)].map((_, index) => [video.buffered.start(index), video.buffered.end(index)]),
+    width: video.videoWidth, rate: video.playbackRate, frames: video.getVideoPlaybackQuality().totalVideoFrames,
     version: window.testPlayback?.mediaVersion, remote: window.testPlayback?.remote } : { present: false };
 };
 const callBytes = client => client.page.evaluate(async () => {
@@ -133,12 +139,14 @@ try {
   const choices = requested ? movies.filter(item => item.title === requested) : movies.slice(0, 60);
   const candidates = [];
   for (const item of choices) {
-    const metadata = await plex.metadata(item.id), bitrate = Number(metadata.Media?.[0]?.bitrate) || 0;
-    if (bitrate >= initialCap * 1.5 && Number(metadata.duration) > 240000) candidates.push({ movie: plex.simplify(metadata), bitrate });
+    const metadata = await plex.metadata(item.id), media = metadata.Media?.[0], bitrate = Number(media?.bitrate) || 0;
+    if (media?.videoCodec === 'hevc' && Number(media.width) <= 1920 && bitrate > 1500 && bitrate * 2 < movieMbps * 1000 * 0.8 && Number(metadata.duration) > 1200000) {
+      candidates.push({ movie: plex.simplify(metadata), bitrate });
+    }
   }
   candidates.sort((a, b) => b.bitrate - a.bitrate);
   const movie = candidates[0]?.movie;
-  assert.ok(movie, 'Choose an existing movie above 5100 kbps and four minutes (TEST_MOVIE may select one).');
+  assert.ok(movie, 'Choose an existing HEVC movie up to 1080p, above 1500 kbps and twenty minutes, with both full-quality streams fitting the upload budget (TEST_MOVIE may select one).');
   await call.createRoom({ name: roomName });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   browser = await chromium.launch({ executablePath: process.env.TEST_CHROME || '/usr/bin/google-chrome', headless: true,
@@ -157,6 +165,7 @@ try {
   assert.equal(assignments().every(Boolean), true);
   const original = assignments()[0];
   assert.equal(assignments()[1].id, original.id); assert.equal(plex.producers.size, 1);
+  assert.ok(assignments().every(stream => stream.diagnostics.maxBitrate === initialCap), 'Both WAN viewers retain the full common ceiling.');
   assert.equal(original.diagnostics.videoDecision, 'transcode', 'The WAN test must exercise video conversion, not an original-quality copy.');
   await actualOutputCount(1);
 
@@ -189,6 +198,7 @@ try {
 } catch (error) {
   console.error(JSON.stringify({ result: 'failed', phase, errorType: error.name,
     message: error.message.split('\n')[0], members: party.members.size, assignments: plex.streams.size, producers: plex.producers.size,
+    media: await Promise.all(clients.map(client => client.page.evaluate(sample).catch(() => ({ present: false })))),
     profiles: clients.map(client => ({ maxBitrate: plex.streams.get(client.identity)?.diagnostics?.maxBitrate,
       latestStart: events.filter(event => event.event === 'stream-start' && event.viewer === client.identity).map(event => ({ bitrate: event.maxBitrate, reason: event.qualityReason })).at(-1) })) }));
   process.exitCode = 1;

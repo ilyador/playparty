@@ -233,7 +233,7 @@ export class Plex {
       videoDecision: ['copy', 'transcode'].includes(row.videoDecision) ? row.videoDecision : 'unknown' };
   }
 
-  async start(identity, movie, { position = 0, hevc = false, maxBitrate = 50000, subtitleId = '', remote, adaptive = false } = {}) {
+  async start(identity, movie, { position = 0, hevc = false, maxBitrate = 50000, subtitleId = '', remote, adaptive = false, forceTranscode = false } = {}) {
     this.cancelStart(this.pendingStarts.get(identity));
     const pending = { abort: new AbortController(), cancelled: false, provisional: false };
     this.pendingStarts.set(identity, pending);
@@ -255,7 +255,7 @@ export class Plex {
       const resolution = reducedResolution && bitrate <= 4000 ? '1280x720' : reducedResolution && bitrate <= 12000 ? '1920x1080' : '3840x2160';
       const params = new URLSearchParams({
         path: `/library/metadata/${movie.id}`, mediaIndex: '0', partIndex: '0',
-        protocol: 'hls', directPlay: '0', directStream: '1', directStreamAudio: '1',
+        protocol: 'hls', directPlay: '0', directStream: forceTranscode ? '0' : '1', directStreamAudio: '1',
         hasMDE: '1', location: remote === false ? 'lan' : 'wan', fastSeek: '1',
         ...(remote === false ? {} : { videoBitrate: String(bitrate), maxVideoBitrate: String(bitrate) }),
         videoResolution: resolution, videoQuality: '100', audioBoost: '100',
@@ -295,10 +295,13 @@ export class Plex {
           const playable = playlist.trimStart().startsWith('#EXTM3U') &&
             playlist.split('\n').some(line => line.trim() && !line.trimStart().startsWith('#'));
           if (!playable) throw Object.assign(new Error('Plex returned an invalid stream playlist. Try again.'), { status: 502 });
+          const bandwidth = Math.max(0, ...playlist.split('\n').filter(line => line.startsWith('#EXT-X-STREAM-INF:'))
+            .map(line => Number(line.match(/[:,]BANDWIDTH=(\d+)(?:,|\r?$)/)?.[1]) / 1000).filter(Number.isFinite));
           return {
             url: this.addResource(output, start.toString(), playlist),
             outputId: output.id,
             offset: 0,
+            ...(bandwidth > 0 ? { bandwidth } : {}),
             quality: video?.decision === 'copy' ? 'Original video' : 'Optimized video',
             kind: 'hls',
             subtitleMode: subtitle ? subtitle.burn ? 'burn' : 'segmented' : 'none',

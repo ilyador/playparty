@@ -297,9 +297,8 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
   });
   app.post('/api/playback', requireMember, async (req, res) => {
     if (!party.movie) return res.status(404).json({ error: 'The host has not chosen anything yet.' });
-    const count = Math.max(1, [...party.members.values()].filter(m => !m.local && (m.connected || m === req.member)).length);
     const remote = !req.member.local;
-    const allowance = remote ? Math.max(1500, Math.floor(Number(movieMbps) * 1000 * 0.85 / count)) : 0;
+    const allowance = remote ? Math.max(1500, Math.floor(Number(movieMbps) * 1000 * 0.85)) : 0;
     const requested = req.body?.maxBitrate;
     const currentBitrate = remote ? typeof requested === 'number' && Number.isFinite(requested) && requested >= 1500 ? Math.min(allowance, Math.floor(requested)) : allowance : 0;
     const qualityReason = ['bandwidth', 'stall', 'recovery'].includes(req.body?.qualityReason) ? req.body.qualityReason : 'initial';
@@ -313,6 +312,7 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
       const previousAssignment = plex.streams.get(req.member.id);
       const result = await plex.start(req.member.id, { ...party.movie, version }, {
         position: party.currentPosition(), hevc: req.body?.hevc === true, maxBitrate: currentBitrate, remote, adaptive: remote && currentBitrate < allowance,
+        forceTranscode: req.body?.forceTranscode === true,
         subtitleId: typeof req.body?.subtitleId === 'string' ? req.body.subtitleId : '',
       });
       const assignment = plex.streams.get(req.member.id);

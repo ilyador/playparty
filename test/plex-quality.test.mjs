@@ -57,3 +57,24 @@ test('initial quality and subtitles preserve browser codec negotiation and timel
   assert.match(params.get('X-Plex-Client-Profile-Extra'), /videoCodec=h264&audioCodec=aac/);
   assert.equal(result.quality, 'Optimized video');
 });
+
+test('decoder recovery asks Plex to encode independently while preserving the selected quality', async () => {
+  const { plex, requests } = fixture();
+  await plex.start('original', { id: '1', version: 2 }, { remote: true, maxBitrate: 59500, hevc: true });
+  const original = requests.at(-1).searchParams;
+  await plex.start('recovery', { id: '1', version: 2 }, { remote: true, maxBitrate: 59500, hevc: true, forceTranscode: true });
+  const recovered = requests.at(-1).searchParams;
+  assert.equal(original.get('directStream'), '1');
+  assert.equal(recovered.get('directStream'), '0');
+  for (const key of ['videoBitrate', 'maxVideoBitrate', 'videoResolution', 'videoQuality', 'X-Plex-Client-Profile-Extra']) {
+    assert.equal(recovered.get(key), original.get(key), 'Encoding recovery cannot lower the requested quality or change codec support.');
+  }
+
+  await plex.start('local-recovery', { id: '1', version: 2 }, { remote: false, maxBitrate: 1500, adaptive: true, forceTranscode: true });
+  const local = requests.at(-1).searchParams;
+  assert.equal(local.get('directStream'), '0');
+  assert.equal(local.get('location'), 'lan');
+  assert.equal(local.has('maxVideoBitrate'), false);
+  assert.equal(local.has('videoBitrate'), false);
+  assert.equal(local.get('videoResolution'), '3840x2160');
+});
