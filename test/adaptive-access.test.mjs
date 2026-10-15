@@ -18,7 +18,7 @@ test('local owner and guests retain full quality while only connected remote vie
     async start(identity, movie, options) {
       starts.push({ identity, movie, options });
       const id = `stream-${identity}`;
-      plex.streams.set(identity, { id, version: movie.version });
+      plex.streams.set(identity, { id, version: movie.version, client: `playparty-${identity}` });
       plex.resources.set(identity, { streamId: id, target: '/fixture.ts' });
       return { url: `/api/stream/${identity}`, offset: 0, quality: 'Original video', subtitleMode: 'none' };
     },

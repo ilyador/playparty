@@ -109,6 +109,10 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
 
   function participant(req) { return sessions.get(cookies(req.headers.cookie).playparty_session); }
   function currentMember(member) { return !closing && member && party.members.get(member.id) === member; }
+  function stopPlayback() {
+    const identities = new Set([...plex.streams.keys(), ...(plex.pendingStarts?.keys() || [])]);
+    return Promise.all([...identities].map(id => plex.stop(id)));
+  }
   function connectedMembers() { return [...party.members.values()].some(member => member.connected); }
   function hostBusy(req) {
     const owner = party.members.get('owner');
@@ -263,7 +267,7 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
     progressSession = randomUUID();
     party.select(plex.simplify(item));
     logPlayback({ event: 'select', mediaVersion: party.mediaVersion, position: party.position });
-    const stopping = Promise.all([...plex.streams.keys()].map(id => plex.stop(id)));
+    const stopping = stopPlayback();
     armReadyTimeout();
     broadcast();
     await Promise.all([stopping, progress]);
@@ -275,18 +279,20 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
     const progress = saveProgress('stopped');
     party.stop();
     logPlayback({ event: 'stop', mediaVersion: party.mediaVersion });
-    const stopping = Promise.all([...plex.streams.keys()].map(id => plex.stop(id)));
+    const stopping = stopPlayback();
     broadcast();
     await Promise.all([stopping, progress]);
     res.json(party.snapshot());
   });
   app.post('/api/control', requireMember, requireHost, async (req, res) => {
     if (!['play', 'pause', 'seek'].includes(req.body?.action)) return res.status(400).json({ error: 'Unknown playback action.' });
+    const version = party.mediaVersion;
     party.control(req.body.action, req.body.position);
+    const stopping = party.mediaVersion !== version ? stopPlayback() : Promise.resolve();
     logPlayback({ event: 'control', action: req.body.action, mediaVersion: party.mediaVersion, position: party.currentPosition() });
     if (req.body.action !== 'pause') armReadyTimeout();
     broadcast();
-    await saveProgress();
+    await Promise.all([stopping, saveProgress()]);
     res.json(party.snapshot());
   });
   app.post('/api/playback', requireMember, async (req, res) => {
@@ -307,8 +313,9 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
         position: party.currentPosition(), hevc: req.body?.hevc === true, maxBitrate: currentBitrate, remote, adaptive: remote && currentBitrate < allowance,
         subtitleId: typeof req.body?.subtitleId === 'string' ? req.body.subtitleId : '',
       });
+      const assignment = plex.streams.get(req.member.id);
       if (!stillJoined() || version !== party.mediaVersion) {
-        await plex.stop(req.member.id);
+        if (assignment) await plex.stop(req.member.id, assignment);
         if (!stillJoined()) throw Object.assign(new Error('Enter your name to join.'), { status: 401 });
         throw Object.assign(new Error('The movie changed. Reconnect to watch.'), { status: 409 });
       }
@@ -328,14 +335,30 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
     const resource = plex.resources.get(String(req.params.resource));
     const stream = plex.streams.get(req.member.id);
     if (!resource || !stream || resource.streamId !== stream.id || stream.version !== party.mediaVersion) return res.sendStatus(404);
+    const assigned = () => currentMember(req.member) && participant(req) === req.member &&
+      plex.streams.get(req.member.id) === stream && stream.version === party.mediaVersion;
     const abort = new AbortController();
     res.on('close', () => abort.abort());
-    const upstream = await plex.request(resource.target, `playparty-${req.member.id}`, { signal: abort.signal, headers: req.headers.range ? { Range: req.headers.range } : {} });
+    let upstream;
+    try {
+      upstream = await plex.request(resource.target, stream.client, { signal: abort.signal, headers: req.headers.range ? { Range: req.headers.range } : {} });
+    } catch (error) {
+      // An expired Plex session affects all its readers. A cancelled HTTP
+      // response or an invalid Range belongs only to that one request.
+      if (!abort.signal.aborted && assigned() && !req.headers.range && [404, 410].includes(error.upstreamStatus)) {
+        const lost = /\.m3u8(?:\?|$)/i.test(resource.target) ||
+          await plex.transcodeMetrics(req.member.id).then(metrics => metrics.available === false, () => false);
+        if (lost && !abort.signal.aborted && assigned()) await plex.invalidate(stream);
+      }
+      throw error;
+    }
+    if (!assigned()) { await upstream.body?.cancel(); return res.sendStatus(404); }
     res.status(upstream.status);
     const type = upstream.headers.get('content-type') || 'application/octet-stream';
     res.type(type);
     if (type.includes('mpegurl') || /\.m3u8(?:\?|$)/i.test(resource.target)) {
       const text = await upstream.text();
+      if (!assigned()) return res.sendStatus(404);
       return res.send(plex.rewritePlaylist(text, new URL(resource.target, plex.url), stream));
     }
     for (const header of ['content-length', 'content-range', 'accept-ranges']) {

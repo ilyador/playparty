@@ -44,6 +44,8 @@ Plex sends compatible original video when it fits the viewer's allowance and con
 
 Playparty adjusts remote streams per viewer. Sustained slow downloads or buffering lower that viewer's Plex bitrate and resolution; a healthy connection recovers one quality step at a time. Browsers using native HLS can lower quality after repeated stalls but keep that setting until rejoining. Local network viewers keep compatible original quality. No Plex server-wide quality settings are changed. Stream replacement uses the shared buffering clock so viewers resume together.
 
+Viewers with matching codec, quality and subtitle settings share one Plex output. Different settings use separate outputs. This reduces duplicate conversion work; each viewer still uses its own HTTP download.
+
 ## Existing authentication provider
 
 The default `AUTH_MODE=network` lets anyone opening the app choose to host while the configured Plex server is accessible. To restrict host and library access through an existing login provider, set `AUTH_MODE=external`, `AUTH_URL`, and `AUTH_COOKIE_NAMES` (comma-separated cookie names) in `.env`. To show **Sign in to host** when its session is missing, also set `LOCAL_AUTH=true` and `AUTH_LOGIN_URL` to the provider's login page. The link is hidden by default. Guests still enter only their name.

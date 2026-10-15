@@ -1,12 +1,12 @@
 # Shared Plex output plan
 
-Proposed work, not implemented. Reuse one normal Plex HLS session for viewers requesting the same output. This reduces duplicate conversion work; each viewer still receives a separate HTTP stream, so home upload usage stays the same. [P2P delivery](p2p-plan.md) is a separate, later optimization.
+Implemented in the existing Plex adapter and stream proxy. Viewers requesting the same output reuse one normal Plex HLS session. This reduces duplicate conversion work; each viewer still receives a separate HTTP stream, so home upload usage stays the same. [P2P delivery](p2p-plan.md) remains a separate, unimplemented optimization.
 
 ## Implementation
 
 1. **Prove reuse against real Plex first.** Create an isolated HLS session with one stable client identity, session ID, profile and start offset. Let two readers consume its playlists and segments. Check identical segment bytes, one transcode session, late joining and long pause/resume, including recovery after Plex expires an idle session. Seek by creating a new session. Stop only the test session afterward. Plex documents its ordinary playback endpoints; multi-viewer reuse remains a behavior we must prove. [Plex API](https://developer.plex.tv/pms/)
 
-2. **Keep ownership in `server/plex.mjs`.** Retain the viewer-to-stream map and add an output-key-to-producer map. Each producer owns its Plex session, stable upstream client identity, rewritten resources, attached viewers and startup promise. Concurrent matching requests await the same promise. Give every actual producer instance an opaque output ID, including replacements after failure.
+2. **Keep ownership in `server/plex.mjs`.** Retain the viewer-to-stream map and add an output-key-to-producer map. Each producer owns its Plex session, stable upstream client identity, rewritten resources, attached viewers and startup promise. Concurrent matching requests await the same promise. Give every Playparty producer instance an opaque output ID, including replacements after observed session loss.
 
 3. **Share exact profiles only.** Build the key from movie, existing `mediaVersion`, effective codec profile, LAN/WAN policy, bitrate, resolution, audio settings and subtitle ID/mode. Include text subtitles: Plex currently packages them into the session's playlists. Freeze the producer's starting offset once; late joiners use its timeline and the existing playback clock. Different quality or subtitle choices get separate producers. Local original-quality behavior stays intact.
 
@@ -23,4 +23,8 @@ Extend the existing adapter/lifecycle tests, then verify with real Plex and brow
 - Late join, long pause, refresh, failure recovery and rapid host seeks preserve decoded playback and the existing sync recovery bounds.
 - Unauthorized resource access fails; the last viewer and an empty party leave no Plex sessions or resource mappings.
 
-Proceed only after the real-Plex proof passes. The change lives in the current adapter and proxy: no Plex patches, extra service, database, persistent cache, subtitle extraction, new quality ladder, sync system or UI controls.
+The real-Plex reuse proof passed. Regressions live in [adapter tests](../test/shared-streams.test.mjs), [HTTP lifecycle tests](../test/shared-stream-access.test.mjs) and the [five-viewer browser test](../test/shared-output-browser.mjs). The existing stress, network-fault and mobile WebKit checks cover connection recovery.
+
+Output IDs identify logical Playparty producers. Plex can silently restart behind the same upstream session UUID; strict byte-generation isolation must be proved before adding P2P caching. Shared HTTP delivery stores no movie segments.
+
+The change lives in the current adapter and proxy: no Plex patches, extra service, database, persistent cache, subtitle extraction, new quality ladder, sync system or UI controls.
