@@ -23,8 +23,6 @@ type CaptureParticipant = Pick<LocalParticipant, 'createTracks' | 'publishTrack'
 export function callCapture(participant: CaptureParticipant, onDiagnostic?: (sample: CaptureDiagnostic) => void) {
   let disposed = false;
   const tracks = new Set<LocalTrack>();
-  let starting: Promise<boolean> | undefined;
-  const enabling = new Map<'mic' | 'camera', Promise<boolean>>();
   const publishing = new Set<LocalTrack>();
   const releasing = new Map<LocalTrack, Promise<void>>();
 
@@ -74,7 +72,7 @@ export function callCapture(participant: CaptureParticipant, onDiagnostic?: (sam
     try {
       acquired = await participant.createTracks({ audio, video });
       for (const track of acquired) tracks.add(track);
-      if (disposed) { stop(acquired); return false; }
+      if (disposed) { stop(acquired); return; }
       diagnose('capture-ready', acquired.some(track => track.kind === 'audio'), acquired.some(track => track.kind === 'video'));
       await Promise.all(acquired.map(async track => {
         if (disposed) return;
@@ -82,7 +80,6 @@ export function callCapture(participant: CaptureParticipant, onDiagnostic?: (sam
         await participant.publishTrack(track);
         if (disposed || failed) await release(track);
       }));
-      return !disposed;
     } catch (error) {
       failed = true;
       stop(acquired);
@@ -93,26 +90,17 @@ export function callCapture(participant: CaptureParticipant, onDiagnostic?: (sam
 
   return {
     get active() { return !disposed; },
-    start() {
-      if (disposed) return Promise.resolve(false);
-      return starting ??= acquireAndPublish(true, true);
+    async start() {
+      if (!disposed) await acquireAndPublish(true, true);
     },
-    enable(kind: 'mic' | 'camera', previous?: LocalTrack) {
-      if (disposed) return Promise.resolve(false);
-      const pending = enabling.get(kind);
-      if (pending) return pending;
-      const request = (async () => {
-        if (previous) {
-          previous.stop();
-          await release(previous);
-          if (disposed) return false;
-        }
-        return acquireAndPublish(kind === 'mic', kind === 'camera');
-      })();
-      enabling.set(kind, request);
-      const finish = () => { if (enabling.get(kind) === request) enabling.delete(kind); };
-      void request.then(finish, finish);
-      return request;
+    async enable(kind: 'mic' | 'camera', previous?: LocalTrack) {
+      if (disposed) return;
+      if (previous) {
+        previous.stop();
+        await release(previous);
+        if (disposed) return;
+      }
+      await acquireAndPublish(kind === 'mic', kind === 'camera');
     },
     dispose() { disposed = true; stop(); },
   };

@@ -29,14 +29,8 @@ const instrument = () => {
   if (!navigator.mediaDevices?.getUserMedia) return;
   const NativeSocket = WebSocket, getMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
   window.testSockets = []; window.testCaptures = []; window.testTracks = []; window.testLifecycle = [];
-  window.testStates = []; window.testPlays = []; window.testPlaying = []; window.testLastState = null; window.testOffset = 0; window.testTasks = 0;
+  window.testStates = []; window.testPlays = []; window.testPlaying = []; window.testLastState = null; window.testTasks = 0;
   setInterval(() => window.testTasks++, 250);
-  const nativeFetch = fetch.bind(window);
-  window.fetch = async (...args) => {
-    const response = await nativeFetch(...args);
-    if (new URL(response.url).pathname === '/api/playback' && response.ok) window.testOffset = Number((await response.clone().json()).offset) || 0;
-    return response;
-  };
   navigator.mediaDevices.getUserMedia = async constraints => {
     window.testCaptures.push(constraints);
     const stream = await getMedia(constraints); window.testTracks.push(...stream.getTracks()); return stream;
@@ -157,10 +151,10 @@ try {
     await guest.bringToFront();
     await guest.waitForFunction(({ version, id }) => {
       const v = document.querySelector('.movie-video');
-      return !document.hidden && v?.paused && v.readyState >= 3 && window.testLastState?.mediaVersion === version && window.testLastState.movie?.id === id && Math.abs(v.currentTime + window.testOffset - 90) < 1;
+      return !document.hidden && v?.paused && v.readyState >= 3 && window.testLastState?.mediaVersion === version && window.testLastState.movie?.id === id && Math.abs(v.currentTime - 90) < 1;
     }, { version, id: second.id }, { timeout: 60000 });
     await delay(2200);
-    const result = await guest.evaluate(() => ({ paused: document.querySelector('.movie-video').paused, current: document.querySelector('.movie-video').currentTime + window.testOffset,
+    const result = await guest.evaluate(() => ({ paused: document.querySelector('.movie-video').paused, current: document.querySelector('.movie-video').currentTime,
       liveSockets: window.testSockets.filter(socket => new URL(socket.url).pathname === '/events' && socket.readyState === WebSocket.OPEN).length,
       captures: window.testCaptures.length, outputs: document.querySelectorAll('audio.call-audio').length }));
     assert.deepEqual(result, { paused: true, current: result.current, liveSockets: 1, captures: 1, outputs: 1 });
@@ -169,27 +163,31 @@ try {
   });
 
   if (!longSleep) await run('Repeated foreground transitions preserve one call and state socket', async () => {
+    await post('control', { action: 'play' });
+    await Promise.all([owner, guest].map(page => page.waitForFunction(playing, undefined, { timeout: 60000 })));
+    await delay(1500);
     assert.equal(await guest.evaluate(() => document.visibilityState), 'visible');
     const beforeSockets = await guest.evaluate(() => window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length);
+    const readiness = party.readinessVersion, resumedAt = party.updatedAt;
     for (let index = 0; index < 4; index++) {
-      await guest.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-      await delay(200);
+      await placeholder.bringToFront(); await delay(100);
+      await guest.bringToFront(); await delay(100);
+      assert.equal(party.paused, false, 'A healthy tab return cannot pause the shared movie.');
+      assert.equal(party.readinessVersion, readiness, 'A healthy tab return cannot revoke movie readiness.');
+      assert.equal(party.updatedAt, resumedAt, 'A healthy tab return cannot restart the shared clock.');
     }
     await delay(2200);
     const result = await guest.evaluate(() => ({ liveSockets: window.testSockets.filter(socket => new URL(socket.url).pathname === '/events' && socket.readyState === WebSocket.OPEN).length,
       captures: window.testCaptures.length, tracks: window.testTracks.filter(track => track.readyState === 'live').length,
       outputs: document.querySelectorAll('audio.call-audio').length, paused: document.querySelector('.movie-video').paused }));
-    assert.deepEqual(result, { liveSockets: 1, captures: 1, tracks: 2, outputs: 1, paused: true });
-    assert.ok(await guest.evaluate(count => window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length >= count + 4, beforeSockets), 'Every foreground transition must actually exercise replacement of the state connection.');
-    await post('control', { action: 'play' });
-    await Promise.all([owner, guest].map(page => page.waitForFunction(playing, undefined, { timeout: 60000 })));
-    await delay(1500);
+    assert.deepEqual(result, { liveSockets: 1, captures: 1, tracks: 2, outputs: 1, paused: false });
+    assert.equal(await guest.evaluate(() => window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length), beforeSockets, 'Healthy foreground transitions must retain the existing state connection.');
     for (let sample = 0; sample < 10; sample++) {
       const state = party.snapshot();
       const readings = await Promise.all([owner, guest].map(page => page.evaluate(() => {
-        const v = document.querySelector('.movie-video'); return { time: v.currentTime + window.testOffset, at: Date.now(), paused: v.paused };
+        const v = document.querySelector('.movie-video'); return { time: v.currentTime, at: Date.now(), paused: v.paused };
       })));
-      assert.ok(!state.paused && !state.waiting, 'Resume after lifecycle churn must retain a playing shared timeline.');
+      assert.ok(!state.paused && !state.waiting, 'Healthy tab returns must retain a playing shared timeline.');
       for (const reading of readings) {
         assert.equal(reading.paused, false);
         assert.ok(Math.abs(reading.time - (state.position + Math.max(0, reading.at - state.updatedAt) / 1000)) < 1, 'Resumed clients must remain within one second of the shared clock for repeated samples.');
@@ -207,7 +205,7 @@ try {
         const state = party.snapshot();
         const readings = await Promise.all([owner, guest].map(page => page.evaluate(() => {
           const v = document.querySelector('.movie-video');
-          return { time: v.currentTime + window.testOffset, at: Date.now(), paused: v.paused,
+          return { time: v.currentTime, at: Date.now(), paused: v.paused,
             state: window.testLastState, ready: v.readyState,
             sockets: window.testSockets.filter(socket => new URL(socket.url).pathname === '/events' && socket.readyState === WebSocket.OPEN).length,
             captures: window.testCaptures.length, tracks: window.testTracks.filter(track => track.readyState === 'live').length,
@@ -252,7 +250,7 @@ try {
       await guest.bringToFront();
       await guest.waitForFunction(() => {
         const v = document.querySelector('.movie-video');
-        return v?.paused && v.readyState >= 3 && Math.abs(v.currentTime + window.testOffset - 150) < 1;
+        return v?.paused && v.readyState >= 3 && Math.abs(v.currentTime - 150) < 1;
       }, undefined, { timeout: 60000 });
       const after = await guest.evaluate(before => ({ tasks: window.testTasks, lifecycle: window.testLifecycle.slice(before.lifecycle), plays: window.testPlays.slice(before.plays), playing: window.testPlaying.slice(before.playing),
         captures: window.testCaptures.length, audio: window.testTracks.filter(track => track.kind === 'audio' && track.readyState === 'live').map(track => ({ enabled: track.enabled, muted: track.muted })) }), before);

@@ -32,14 +32,13 @@ test('local compatible playback removes bitrate ceilings and ignores remote qual
 test('only reduced remote streams constrain resolution, using per-session parameters', async () => {
   const { plex, requests } = fixture();
   for (const [maxBitrate, expected] of [[1500, '1280x720'], [4000, '1280x720'], [8000, '1920x1080'], [20000, '3840x2160']]) {
-    await plex.start('remote-guest', { id: '1', version: 2 }, { remote: true, adaptive: true, maxBitrate });
+    const result = await plex.start('remote-guest', { id: '1', version: 2 }, { remote: true, adaptive: true, maxBitrate });
     const url = requests.at(-1);
     assert.equal(url.pathname, '/video/:/transcode/universal/decision');
     assert.equal(url.searchParams.get('location'), 'wan');
     assert.equal(url.searchParams.get('maxVideoBitrate'), String(maxBitrate));
     assert.equal(url.searchParams.get('videoResolution'), expected);
-    const stream = plex.streams.get('remote-guest');
-    const start = new URL(plex.resources.get([...stream.resourceIds][0]).target, plex.url);
+    const start = new URL(plex.resources.get(result.url.split('/').at(-1)).target, plex.url);
     assert.deepEqual([...start.searchParams], [...url.searchParams]);
   }
 });
@@ -51,7 +50,6 @@ test('initial quality and subtitles preserve browser codec negotiation and timel
   assert.equal(params.get('videoResolution'), '3840x2160');
   assert.equal(params.get('offset'), '123');
   assert.equal(params.get('copyts'), '1');
-  assert.equal(result.offset, 0);
   assert.equal(params.get('subtitles'), 'burn');
   assert.equal(params.get('subtitleStreamID'), '9');
   assert.match(params.get('X-Plex-Client-Profile-Extra'), /videoCodec=h264&audioCodec=aac/);

@@ -59,8 +59,6 @@ try {
   await context.addInitScript(instrument);
   await context.addCookies([{ name: 'test_owner', value: testOwner, url: 'http://localhost:5176' }]);
   const page = await context.newPage();
-  const hostStreams = [];
-  page.on('response', async response => { if (response.url().endsWith('/api/playback') && response.ok()) hostStreams.push(await response.json()); });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (['error', 'warning'].includes(message.type())) console.log('BROWSER', message.text().slice(0, 350)); });
@@ -114,7 +112,6 @@ try {
     while (Date.now() < deadline) {
       const snapshot = party.snapshot();
       const positions = await Promise.all([page, guest].map(viewer => viewer.locator('.movie-video').evaluate(video => ({ position: video.currentTime, paused: video.paused, readyState: video.readyState, seeking: video.seeking, rate: video.playbackRate, clock: window.testClock, at: Date.now() }))));
-      const absolute = positions.map((sample, index) => ({ ...sample, position: sample.position + (index === 0 ? hostStreams : guestStreams).at(-1).offset }));
       const after = party.snapshot();
       if (['mediaVersion', 'readinessVersion', 'updatedAt', 'position', 'paused', 'waiting'].some(key => snapshot[key] !== after[key])) {
         healthySince = localWaitSince = undefined;
@@ -129,19 +126,19 @@ try {
           if (hold) heldMs += now - hold.at;
           hold = { at: now, position: snapshot.position, version: snapshot.readinessVersion }; holds++;
           const reasons = playbackEvents.filter(sample => ['shared-buffering', 'quality-change', 'stream-start', 'viewer-ready', 'shared-resume', 'waiting', 'playing', 'ready', 'seek-recovery', 'sync-recovery', 'state-stale'].includes(sample.event)).slice(-8).map(sample => ({ event: sample.event, viewer: sample.viewer === 'owner' ? 'host' : sample.viewer ? 'guest' : undefined, qualityReason: sample.qualityReason, readyState: sample.readyState }));
-          console.log(`${label}: shared hold ${JSON.stringify({ paused: snapshot.paused, waiting: snapshot.waiting, media: absolute.map(sample => ({ paused: sample.paused, readyState: sample.readyState, seeking: sample.seeking })), reasons })}`);
+          console.log(`${label}: shared hold ${JSON.stringify({ paused: snapshot.paused, waiting: snapshot.waiting, media: positions.map(sample => ({ paused: sample.paused, readyState: sample.readyState, seeking: sample.seeking })), reasons })}`);
         }
         if (snapshot.paused && now - hold.at >= 750) {
           assert.equal(snapshot.position, hold.position, `${label}: buffering must freeze the shared timeline.`);
-          assert.ok(absolute.every(sample => sample.paused), `${label}: both viewers must stop during an established shared buffering hold.`);
+          assert.ok(positions.every(sample => sample.paused), `${label}: both viewers must stop during an established shared buffering hold.`);
         }
-      } else if (absolute.every(sample => !sample.paused && sample.readyState >= 3 && !sample.seeking)) {
+      } else if (positions.every(sample => !sample.paused && sample.readyState >= 3 && !sample.seeking)) {
         if (hold) { heldMs += now - hold.at; hold = undefined; }
         localWaitSince = undefined; healthySince ??= now;
-        const difference = Math.abs(absolute[0].position - absolute[1].position);
+        const difference = Math.abs(positions[0].position - positions[1].position);
         viewerDrift = Math.max(viewerDrift, difference);
         assert.ok(difference < 1, `${label}: viewers drifted ${difference.toFixed(3)} seconds apart.`);
-        for (const [index, sample] of absolute.entries()) {
+        for (const [index, sample] of positions.entries()) {
           const target = Math.min(snapshot.position + Math.max(0, sample.at - snapshot.updatedAt) / 1000, snapshot.movie.duration);
           const drift = Math.abs(sample.position - target);
           timelineDrift = Math.max(timelineDrift, drift);

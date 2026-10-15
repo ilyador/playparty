@@ -83,7 +83,7 @@ const actualOutputCount = async expected => {
 };
 const sample = () => {
   const video = document.querySelector('.movie-video');
-  return video ? { present: true, time: video.currentTime + (window.testPlayback?.offset || 0), at: Date.now(), paused: video.paused,
+  return video ? { present: true, time: video.currentTime, at: Date.now(), paused: video.paused,
     ready: video.readyState, seeking: video.seeking, error: video.error?.code, buffered: [...Array(video.buffered.length)].map((_, index) => [video.buffered.start(index), video.buffered.end(index)]),
     width: video.videoWidth, rate: video.playbackRate, frames: video.getVideoPlaybackQuality().totalVideoFrames,
     version: window.testPlayback?.mediaVersion, remote: window.testPlayback?.remote } : { present: false };

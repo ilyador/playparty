@@ -157,6 +157,7 @@ function clock() {
   };
   return {
     performance: { now: () => now },
+    Date: { now: () => now },
     setInterval: (callback, delay) => schedule(callback, delay, true),
     clearInterval: id => scheduled.delete(id),
     setTimeout: (callback, delay) => schedule(callback, delay, false),
@@ -465,7 +466,7 @@ test('expired party membership ends live SDK capture and call audio even after f
       assert.equal(view.audioOutputs.size, 1);
       let expired = old;
       if (foreground) {
-        view.visibility('hidden'); view.visibility('visible');
+        view.visibility('hidden'); old.readyState = 3; view.visibility('visible');
         expired = view.sockets[1]; open(expired);
         old.onclose({ code: 4002 }); view.render();
         assert.equal(view.joinError(), undefined, 'A late old close cannot evict a replacement before it proves its session expired.');
@@ -550,6 +551,7 @@ test('queued and invalid pongs cannot poison the playback clock, and reconnect r
   const initialPings = first.sent.filter(message => message.type === 'ping').length;
   for (let index = 0; index < 5; index++) { now += 2000; timer.advance(2000); receive(first); view.render(); }
   assert.equal(first.sent.filter(message => message.type === 'ping').length, initialPings + 1, 'Filtering clock samples must retain the existing ten-second ping cadence.');
+  first.readyState = 3; first.onclose();
   view.visibility('hidden'); view.visibility('visible');
   const second = view.sockets[1]; open(second); receive(second); view.render();
   pong(second, 5033, 2516.5);
@@ -617,26 +619,27 @@ test('missing initial state times out even when pongs arrive or the socket never
   });
 });
 
-test('foreground refresh replaces party transport immediately without losing the call or queued cleanup', async t => {
+test('healthy foreground preserves playback, while a closed socket reconnects immediately', async t => {
   const timer = clock(), initial = tracks(), view = app([{ capture: async () => initial }], timer, movieState);
   t.after(() => view.dispose());
   await view.join();
   const first = view.sockets[0]; open(first); receive(first); view.render();
+  const generation = view.player().connectionVersion;
   view.visibility('hidden');
   assert.equal(view.sockets.length, 1, 'Backgrounding alone must not reconnect or leave the call.');
   view.movie.paused = false;
   view.visibility('visible');
-  assert.equal(view.movie.paused, true);
-  assert.equal(view.player().stateFresh, false);
-  assert.equal(view.sockets.length, 2);
-  const second = view.sockets[1]; open(second); receive(second); view.render();
-  second.readyState = 3; second.onclose(); view.render();
+  assert.equal(view.movie.paused, false, 'A healthy tab return cannot interrupt the movie.');
+  assert.equal(view.player().stateFresh, true);
+  assert.equal(view.player().connectionVersion, generation);
+  assert.equal(view.sockets.length, 1, 'A healthy state connection must retain its readiness.');
+  first.readyState = 3; first.onclose(); view.render();
   assert.equal(view.player().stateFresh, false);
   view.visibility('visible');
-  assert.equal(view.sockets.length, 3, 'Foregrounding should immediately replace a scheduled delayed reconnect.');
-  const third = view.sockets[2]; open(third); receive(third);
+  assert.equal(view.sockets.length, 2, 'Foregrounding should immediately replace a scheduled delayed reconnect.');
+  const second = view.sockets[1]; open(second); receive(second);
   timer.advance(1500);
-  assert.equal(view.sockets.length, 3);
+  assert.equal(view.sockets.length, 2);
   assert.equal(view.rooms[0].disconnections || 0, 0);
   assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'live'));
   await view.leave();
@@ -644,4 +647,42 @@ test('foreground refresh replaces party transport immediately without losing the
   view.visibility('visible'); timer.advance(20000);
   assert.equal(view.sockets.length, count, 'Leave must remove foreground handling and its watchdog timer.');
   assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'ended'));
+});
+
+test('suspended wall time and queued old snapshots cannot make a waking timeline fresh', async t => {
+  const timer = clock(), initial = tracks();
+  let now = 100000;
+  const view = app([{ capture: async () => initial }], { ...timer, Date: { now: () => now } }, movieState);
+  t.after(() => view.dispose());
+  await view.join();
+  const first = view.sockets[0]; open(first);
+  receive(first, { ...movieState, serverTime: now + 500 });
+  receive(first, { type: 'pong', sent: now, serverTime: now + 500 }); view.render();
+  view.visibility('hidden');
+  view.movie.paused = false;
+  now += 15000;
+  assert.equal(timer.performance.now(), 0, 'Suspension need not advance the media watchdog clock or run its timer.');
+  view.visibility('visible');
+  assert.equal(view.movie.paused, true);
+  assert.equal(view.player().stateFresh, false);
+  assert.equal(view.sockets.length, 2, 'A stale wake must recover immediately without waiting for its suspended timer.');
+  const second = view.sockets[1]; open(second);
+  receive(second, { ...movieState, position: 50, serverTime: now + 500 });
+  receive(second, { type: 'pong', sent: now, serverTime: now + 500 }); view.render();
+  view.visibility('hidden');
+  view.movie.paused = false;
+  now += 15000;
+  receive(second, { ...movieState, position: 50, serverTime: now - 15000 + 500 }); view.render();
+  assert.equal(view.movie.paused, true);
+  assert.equal(view.player().stateFresh, false, 'A queued pre-suspension snapshot cannot authorize playback.');
+  assert.equal(view.sockets.length, 3, 'An old queued snapshot must trigger immediate fresh-state recovery.');
+  view.visibility('visible');
+  assert.equal(view.sockets.length, 3, 'Foregrounding cannot replace the recovery already in flight.');
+  const third = view.sockets[2]; open(third);
+  receive(third, { ...movieState, position: 60, serverTime: now + 500 }); view.render();
+  assert.equal(view.player().stateFresh, true);
+  assert.equal(view.player().state.position, 60);
+  assert.equal(view.rooms.length, 1);
+  assert.equal(view.rooms[0].requests.length, 1);
+  assert.ok(initial.every(track => track.mediaStreamTrack.readyState === 'live'));
 });

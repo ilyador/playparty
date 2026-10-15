@@ -20,7 +20,7 @@ test('local viewers retain original quality and remote initial quality does not 
       const id = `stream-${identity}`;
       plex.streams.set(identity, { id, version: movie.version, client: `playparty-${identity}` });
       plex.resources.set(identity, { streamId: id, target: '/fixture.ts' });
-      return { url: `/api/stream/${identity}`, offset: 0, quality: 'Original video', subtitleMode: 'none' };
+      return { url: `/api/stream/${identity}`, quality: 'Original video', subtitleMode: 'none' };
     },
     async stop(identity) { plex.streams.delete(identity); plex.resources.delete(identity); },
     async request(target, identity) {

@@ -721,7 +721,7 @@ test('subtitle choices belong to the selected media and use text renditions or i
 
 test('Plex playlists hide credentials, reject other origins, and reuse resource identifiers', () => {
   const plex = new Plex({ token: 'secret-token' });
-  const stream = { id: 'stream', resourceIds: new Set(), targets: new Map() };
+  const stream = { id: 'stream', targets: new Map() };
   const manifest = '#EXTM3U\n#EXT-X-MAP:URI="header?X-Plex-Token=secret-token"\n00000.ts\n';
   const first = plex.rewritePlaylist(manifest, new URL('http://127.0.0.1:32400/session/base/index.m3u8'), stream);
   assert.equal(first.includes('secret-token'), false);

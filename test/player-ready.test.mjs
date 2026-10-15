@@ -138,7 +138,7 @@ function mountPlayer(party, member, { currentTime = party.position, bufferedEnd 
     },
     async loadSource() {
       assert.ok(requests.length, 'A source request must be pending.');
-      requests.shift().resolve({ url: '/fixture', offset: 0, mediaVersion: party.mediaVersion, quality: 'Original video', remote: false, maxBitrate: 0, currentBitrate: 0, subtitleMode: 'none' });
+      requests.shift().resolve({ url: '/fixture', mediaVersion: party.mediaVersion, quality: 'Original video', remote: false, maxBitrate: 0, currentBitrate: 0, subtitleMode: 'none' });
       for (let i = 0; i < 12; i++) await Promise.resolve();
     },
     dispose: () => slots.forEach(slot => slot?.cleanup?.()),

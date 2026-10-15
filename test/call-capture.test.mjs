@@ -36,11 +36,10 @@ test('a permission request resolved after leaving releases both devices without 
     unpublishTrack: async () => {},
   });
   const first = capture.start();
-  assert.equal(capture.start(), first, 'Repeated startup must share one browser request.');
   assert.deepEqual(requests, [{ audio: true, video: true }]);
   capture.dispose();
   consent.resolve(tracks);
-  assert.equal(await first, false);
+  await first;
   assert.deepEqual(publications, []);
   assert.deepEqual(tracks.map(track => track.readyState), ['ended', 'ended']);
 });
@@ -68,7 +67,7 @@ test('leaving during publication releases devices immediately and removes late p
   capture.dispose();
   assert.deepEqual(tracks.map(track => track.readyState), ['ended', 'ended']);
   for (const gate of gates.values()) gate.resolve();
-  assert.equal(await started, false);
+  await started;
   assert.equal(published.size, 0);
   assert.equal(unpublished.length, 2);
 });
@@ -105,7 +104,7 @@ test('unsupported permission queries do not block the combined capture or public
     publishTrack: async () => {},
     unpublishTrack: async () => {},
   }, sample => samples.push(structuredClone(sample)), { query: async () => { throw new TypeError('unsupported permission'); } });
-  assert.equal(await capture.start(), true);
+  await capture.start();
   await flush();
   assert.deepEqual(requests, [{ audio: true, video: true }]);
   assert.deepEqual(samples, [
@@ -139,7 +138,7 @@ test('capture diagnostics contain only event, device booleans and browser permis
 test('pending Safari permission queries cannot hide capture diagnostics', async () => {
   const samples = [];
   const capture = controller({ createTracks: async () => [track('audio'), track('video')], publishTrack: async () => {}, unpublishTrack: async () => {} }, sample => samples.push(structuredClone(sample)), { query: () => new Promise(() => {}) });
-  assert.equal(await capture.start(), true);
+  await capture.start();
   assert.deepEqual(samples.map(sample => sample.event), ['capture-request', 'capture-ready']);
   capture.dispose();
 });
@@ -157,7 +156,7 @@ test('failed camera retry releases its own device and preserves an enabled micro
   });
   await assert.rejects(capture.start(), /Initial permission denied/);
   assert.equal(capture.active, true, 'A denied initial request must permit device retries.');
-  assert.equal(await capture.enable('mic'), true);
+  await capture.enable('mic');
   await assert.rejects(capture.enable('camera'), /Camera publication failed/);
   await flush();
   assert.equal(microphone.readyState, 'live');
@@ -168,7 +167,7 @@ test('failed camera retry releases its own device and preserves an enabled micro
   assert.equal(published.size, 0);
 });
 
-test('pending microphone and camera retries share requests and stop without publishing after leave', async () => {
+test('pending microphone and camera retries stop without publishing after leave', async () => {
   for (const kind of ['mic', 'camera']) {
     const consent = deferred(), device = track(kind === 'mic' ? 'audio' : 'video');
     let requests = 0, publications = 0;
@@ -178,14 +177,13 @@ test('pending microphone and camera retries share requests and stop without publ
       unpublishTrack: async () => {},
     });
     const pending = capture.enable(kind);
-    assert.equal(capture.enable(kind), pending);
     capture.dispose(); consent.resolve([device]);
-    assert.equal(await pending, false);
+    await pending;
     assert.equal(requests, 1);
     assert.equal(publications, 0);
     assert.equal(device.readyState, 'ended');
     assert.equal(capture.active, false);
-    assert.equal(await capture.enable(kind), false);
+    await capture.enable(kind);
     assert.equal(requests, 1);
   }
 });
@@ -207,7 +205,7 @@ test('leaving before SDK publication is registered still removes a publication t
   const started = capture.start(); await flush();
   capture.dispose(); await flush();
   beforeRegistration.resolve(); await flush(); publication.resolve();
-  assert.equal(await started, false);
+  await started;
   assert.equal(published, false);
   assert.equal(device.readyState, 'ended');
   assert.equal(unpublishes, 2, 'An early completed unpublish must not suppress post-publication cleanup.');

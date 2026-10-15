@@ -43,7 +43,7 @@ async function fixture(t, overrides = {}) {
     async start(id, movie) {
       started.push({ id, movie });
       plex.streams.set(id, { id: `stream-${movie.id}`, version: movie.version });
-      return { url: '/api/stream/fixture', offset: 0 };
+      return { url: '/api/stream/fixture' };
     },
     async stop(id) { stopped.push(id); plex.streams.delete(id); },
     ...overrides,
@@ -160,7 +160,7 @@ test('claiming a disconnected empty room drains an in-flight transcode and rejec
     async start(id, movie) {
       if (movie.id === 'old') { oldStart = true; await startGate.promise; }
       f.plex.streams.set(id, { id: `stream-${movie.id}`, version: movie.version });
-      return { url: '/api/stream/fixture', offset: 0 };
+      return { url: '/api/stream/fixture' };
     },
   });
   const first = await f.join('Never connected host', '', false);

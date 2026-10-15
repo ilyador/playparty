@@ -26,19 +26,10 @@ server.prependListener('upgrade', (req, socket) => {
 });
 const instrument = () => {
   const nativeCapture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices), NativePeer = RTCPeerConnection, NativeSocket = WebSocket;
-  window.testCaptures = []; window.testTracks = []; window.testPeers = []; window.testSockets = []; window.testOffset = 0;
+  window.testCaptures = []; window.testTracks = []; window.testPeers = []; window.testSockets = [];
   navigator.mediaDevices.getUserMedia = async constraints => { window.testCaptures.push(constraints); const stream = await nativeCapture(constraints); window.testTracks.push(...stream.getTracks()); return stream; };
   window.RTCPeerConnection = class extends NativePeer { constructor(...args) { super(...args); window.testPeers.push(this); } };
   window.WebSocket = class extends NativeSocket { constructor(...args) { super(...args); window.testSockets.push(this); } };
-  const nativeFetch = window.fetch.bind(window);
-  window.fetch = async (...args) => {
-    const response = await nativeFetch(...args);
-    if (new URL(response.url).pathname === '/api/playback' && response.ok) {
-      // Observe valid offsets without masking the application's empty-200 error.
-      try { const result = await response.clone().json(); if (Number.isFinite(result.offset)) window.testOffset = result.offset; } catch {}
-    }
-    return response;
-  };
 };
 const playing = () => { const v = document.querySelector('.movie-video'); return v && !v.paused && v.readyState >= 3 && v.currentTime > 2; };
 const join = async client => {
@@ -64,7 +55,7 @@ const assertStable = async label => {
   let stableSince = Date.now(), samples = 0, maxDrift = 0, maxSpread = 0, heldPosition, heldVersion;
   while (Date.now() < deadline && Date.now() - stableSince < 10000) {
     const before = party.snapshot();
-    const readings = await Promise.all(clients.map(client => client.page.evaluate(() => { const v = document.querySelector('.movie-video'); return { time: v.currentTime + window.testOffset, at: Date.now(), paused: v.paused, ready: v.readyState, rate: v.playbackRate }; })));
+    const readings = await Promise.all(clients.map(client => client.page.evaluate(() => { const v = document.querySelector('.movie-video'); return { time: v.currentTime, at: Date.now(), paused: v.paused, ready: v.readyState, rate: v.playbackRate }; })));
     const after = party.snapshot();
     const sameClock = ['mediaVersion', 'readinessVersion', 'updatedAt', 'position'].every(key => before[key] === after[key]);
     if (before.waiting && after.waiting && sameClock) {

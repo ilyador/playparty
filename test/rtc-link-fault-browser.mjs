@@ -26,7 +26,7 @@ const { server, party, close } = createApp({ plex, authenticateOwner: header => 
 let hostBrowser, guestBrowser, guestChrome, guestChromeExit, profile, session, networkPid, networkStopped = false;
 const instrument = () => {
   const nativeCapture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices), NativePeer = RTCPeerConnection, NativeSocket = WebSocket;
-  window.testCaptures = []; window.testTracks = []; window.testPeers = []; window.testSockets = []; window.testOffset = 0; window.testTasks = 0;
+  window.testCaptures = []; window.testTracks = []; window.testPeers = []; window.testSockets = []; window.testTasks = 0;
   window.testPeerEvents = []; window.testIceRestarts = [];
   window.testPongs = [];
   setInterval(() => window.testTasks++, 250);
@@ -48,12 +48,6 @@ const instrument = () => {
         handler?.call(this, event);
       };
     }
-  };
-  const nativeFetch = window.fetch.bind(window);
-  window.fetch = async (...args) => {
-    const response = await nativeFetch(...args);
-    if (new URL(response.url).pathname === '/api/playback' && response.ok) { try { const result = await response.clone().json(); if (Number.isFinite(result.offset)) window.testOffset = result.offset; } catch {} }
-    return response;
   };
 };
 const join = async client => {
@@ -146,7 +140,7 @@ const stable = async (label, muted = false) => {
   const deadline = Date.now() + 45000; let stableSince = Date.now(), samples = 0, maxDrift = 0, maxSpread = 0;
   while (Date.now() < deadline && Date.now() - stableSince < 10000) {
     const before = party.snapshot();
-    const readings = await Promise.all(clients.map(client => client.page.evaluate(() => { const v = document.querySelector('.movie-video'); return { time: v.currentTime + window.testOffset, at: Date.now(), paused: v.paused, ready: v.readyState, rate: v.playbackRate, seeking: v.seeking, pongs: window.testPongs.slice(-3) }; })));
+    const readings = await Promise.all(clients.map(client => client.page.evaluate(() => { const v = document.querySelector('.movie-video'); return { time: v.currentTime, at: Date.now(), paused: v.paused, ready: v.readyState, rate: v.playbackRate, seeking: v.seeking, pongs: window.testPongs.slice(-3) }; })));
     const after = party.snapshot();
     const immutable = ['mediaVersion', 'readinessVersion', 'updatedAt', 'position', 'paused', 'waiting'].every(key => before[key] === after[key]);
     if (!immutable || before.waiting || before.paused || Date.now() < after.updatedAt + 1000) stableSince = Date.now();

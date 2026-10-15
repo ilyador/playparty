@@ -9,7 +9,7 @@ import { seekWatchdog } from './seek-watchdog';
 import { syncWatchdog } from './sync-watchdog';
 import { createAdaptiveQuality, type QualityReason } from './adaptive-quality';
 
-type Playback = { url: string; offset: number; quality: string; mediaVersion: number; subtitleMode: 'none' | 'segmented' | 'burn'; remote: boolean; maxBitrate: number; currentBitrate: number; bandwidth?: number };
+type Playback = { url: string; quality: string; mediaVersion: number; subtitleMode: 'none' | 'segmented' | 'burn'; remote: boolean; maxBitrate: number; currentBitrate: number; bandwidth?: number };
 const maxBufferGap = 0.2;
 const time = (value: number) => {
   const seconds = Math.max(0, Math.floor(value || 0));
@@ -17,10 +17,8 @@ const time = (value: number) => {
 };
 
 export default function Player({ mediaElement, state, stateFresh, owner, speaking, clockOffset, connectionVersion, onReady, onBuffering, onTelemetry, onStop, fullscreen, onFullscreen }: { mediaElement: HTMLVideoElement; state: PartyState; stateFresh: boolean; owner: boolean; speaking: boolean; clockOffset: number; connectionVersion: number; onReady: (version: number) => void; onBuffering: (version: number) => void; onTelemetry: (sample: Record<string, string | number | boolean>) => void; onStop: () => Promise<void>; fullscreen: boolean; onFullscreen: (active: boolean) => void }) {
-  const video = useRef<HTMLVideoElement>(mediaElement);
   const container = useRef<HTMLDivElement>(null);
   const stateRef = useRef(state);
-  const offsetRef = useRef(0);
   const playback = useRef<Playback | null>(null);
   const onReadyRef = useRef(onReady);
   const clockRef = useRef(clockOffset);
@@ -100,12 +98,11 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
     return element.readyState >= (renderer.current === 'hls' ? 2 : 1);
   }
   function report(event: string) {
-    const element = video.current;
-    if (!element) return;
+    const element = mediaElement;
     const current = stateRef.current;
     const captions = [...element.textTracks].filter(track => track.mode === 'showing');
-    const target = Math.max(0, positionAt(current, Date.now() + clockRef.current) - offsetRef.current);
-    onTelemetryRef.current({ event, mediaVersion: current.mediaVersion, position: element.currentTime + offsetRef.current, target: target + offsetRef.current,
+    const target = Math.max(0, positionAt(current, Date.now() + clockRef.current));
+    onTelemetryRef.current({ event, mediaVersion: current.mediaVersion, position: element.currentTime, target,
       drift: element.currentTime - target, bufferAhead: ahead(element, element.currentTime), readyState: element.readyState, rate: element.playbackRate,
       paused: element.paused, waiting: current.waiting, sharedPaused: current.paused, seeking: element.seeking, needsGesture: gestureRequired.current, renderer: renderer.current,
       captionTracks: element.textTracks.length, captionCues: captions.reduce((count, track) => count + (track.activeCues?.length || 0), 0), captionsShowing: captions.length > 0 });
@@ -118,8 +115,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   }
 
   useEffect(() => {
-    if (!video.current) return;
-    const controller = movieAudio(video.current, sample => onTelemetryRef.current({ ...sample }));
+    const controller = movieAudio(mediaElement, sample => onTelemetryRef.current({ ...sample }));
     audio.current = controller;
     return () => { controller.dispose(); if (audio.current === controller) audio.current = null; };
   }, []);
@@ -130,14 +126,14 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
     gestureRequired.current = required; setNeedsGesture(required);
   }
   function playVideo(fromGesture = false) {
-    const element = video.current;
+    const element = mediaElement;
     if (!freshRef.current || fatalPlayback.current) { element.pause(); return; }
     if (stateRef.current.paused || Date.now() + clockRef.current < stateRef.current.updatedAt) {
       if (fromGesture) { createMovieElement(element); setGestureRequired(false); }
       element.pause(); return;
     }
-    if (element && !element.paused) { if (gestureRequired.current) setGestureRequired(false); return; }
-    if (!element || (!fromGesture && (gestureRequired.current || pendingPlay.current))) return;
+    if (!element.paused) { if (gestureRequired.current) setGestureRequired(false); return; }
+    if (!fromGesture && (gestureRequired.current || pendingPlay.current)) return;
     const version = stateRef.current.mediaVersion;
     const generation = sourceGeneration.current;
     if (fromGesture) setGestureRequired(false);
@@ -151,8 +147,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   }
 
   function placeCaptions() {
-    const element = video.current;
-    if (!element) return;
+    const element = mediaElement;
     const bounds = element.getBoundingClientRect();
     const app = container.current?.closest('.app');
     const faces = (document.fullscreenElement || app?.classList.contains('is-fullscreen')) && app?.querySelector('.people-strip')?.getBoundingClientRect();
@@ -164,8 +159,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   }
 
   useEffect(() => {
-    const element = video.current;
-    if (!element) return;
+    const element = mediaElement;
     const tracks = new Set<TextTrack>();
     const addTrack = (event: TrackEvent) => {
       if (!event.track) return;
@@ -184,8 +178,8 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   }, []);
 
   useEffect(() => {
-    const element = video.current;
-    if (!element || !state.movie) return;
+    const element = mediaElement;
+    if (!state.movie) return;
     const abort = new AbortController();
     let hls: Hls | undefined;
     let mediaRecoveries = 0;
@@ -252,7 +246,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       }
       if (!current.waiting) { wasWaiting = false; return; }
       if (!wasWaiting) { readySent = false; wasWaiting = true; }
-      const target = Math.max(0, current.position - offsetRef.current);
+      const target = Math.max(0, current.position);
       const needed = Math.min(4, Math.max(0.2, (current.movie?.duration || Infinity) - current.position - 0.1));
       if (!playback.current || !canAlign(element) || gestureRequired.current) return;
       if (!element.seeking && Math.abs(element.currentTime - target) > 0.35) {
@@ -272,7 +266,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       if (abort.signal.aborted) return;
       const { default: Hls } = await import('hls.js');
       if (abort.signal.aborted) return;
-      playback.current = result; offsetRef.current = result.offset;
+      playback.current = result;
       const configuration = { remote: result.remote, maxBitrate: result.maxBitrate, currentBitrate: result.currentBitrate,
         measuredTransfers: Hls.isSupported(), originalBitrate: result.bandwidth };
       if (!adaptive.current) adaptive.current = createAdaptiveQuality({ ...configuration, onChange: (bitrate, reason) => {
@@ -286,7 +280,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
         renderer.current = 'hls';
         // A shared playlist retains its producer's original EXT-X-START.
         // Load at this viewer's current clock before the first fragment arrives.
-        const startPosition = Math.max(0, positionAt(stateRef.current, Date.now() + clockRef.current) - result.offset);
+        const startPosition = Math.max(0, positionAt(stateRef.current, Date.now() + clockRef.current));
         hls = new Hls({ startPosition, startOnSegmentBoundary: true, maxBufferLength: 16, maxMaxBufferLength: 30, backBufferLength: 8, maxBufferHole: maxBufferGap, enableWorker: true, manifestLoadingTimeOut: 30000, levelLoadingTimeOut: 30000, fragLoadingTimeOut: 30000 });
         // Plex marks the requested rendition DEFAULT=YES. Let Hls select it
         // after the active subtitle group exists, rather than during parsing.
@@ -319,9 +313,8 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
 
   useEffect(() => {
     const synchronize = () => {
-      const element = video.current;
+      const element = mediaElement;
       const current = stateRef.current;
-      if (!element) return;
       const timestamp = performance.now();
       if (!freshRef.current) { element.pause(); syncHealth.current.reset(); seekHealth.current.reset(); return; }
       if (fatalPlayback.current) {
@@ -356,7 +349,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       if (!playback.current || playback.current.mediaVersion !== current.mediaVersion) { syncHealth.current.reset(); element.pause(); return; }
       if (element.ended) {
         syncHealth.current.reset();
-        if (!seeking.current) setPosition(element.currentTime + offsetRef.current);
+        if (!seeking.current) setPosition(element.currentTime);
         return;
       }
       const wantsPlayback = !current.paused || current.waiting;
@@ -366,7 +359,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
         bufferAhead: ahead(element, element.currentTime), stalled: wantsPlayback && element.readyState < 3,
         stallBitrate: (playback.current?.maxBitrate || 0) / Math.max(1, current.remoteViewers || 1) });
       const now = Date.now() + clockRef.current;
-      const desired = Math.max(0, positionAt(current, now) - offsetRef.current);
+      const desired = Math.max(0, positionAt(current, now));
       const eligible = !current.paused && !current.waiting && now >= current.updatedAt && !element.paused && !gestureRequired.current && !seeking.current && !document.hidden && element.readyState >= 3 && (nativeReady(element) || ahead(element, element.currentTime) >= 4);
       if (syncHealth.current.sample(timestamp, element.currentTime, desired, eligible, element.seeking)) {
         report('sync-recovery'); setSourceRetry(retry => retry + 1); return;
@@ -376,7 +369,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
         if (!current.waiting && canAlign(element) && !element.seeking && ahead(element, desired) > 0.2 && Math.abs(element.currentTime - desired) > 0.35 && performance.now() - lastCorrection.current >= 2000) {
           lastCorrection.current = performance.now(); element.currentTime = desired;
         }
-        if (!seeking.current) setPosition(element.currentTime + offsetRef.current);
+        if (!seeking.current) setPosition(element.currentTime);
         return;
       }
       if (gestureRequired.current && element.paused) { holdForBuffer(); return; }
@@ -389,7 +382,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
       const rate = syncRate(element.playbackRate, difference);
       if (element.playbackRate !== rate) element.playbackRate = rate;
       if (element.paused) playVideo();
-      if (!seeking.current) setPosition(element.currentTime + offsetRef.current);
+      if (!seeking.current) setPosition(element.currentTime);
     };
     syncNow.current = synchronize;
     const interval = window.setInterval(synchronize, 350);
@@ -397,7 +390,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   }, []);
 
   useLayoutEffect(() => {
-    if (!stateFresh) { video.current.pause(); syncHealth.current.reset(); seekHealth.current.reset(); }
+    if (!stateFresh) { mediaElement.pause(); syncHealth.current.reset(); seekHealth.current.reset(); }
     else syncNow.current();
   }, [stateFresh, connectionVersion]);
 
@@ -415,7 +408,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
   useEffect(() => { const frame = requestAnimationFrame(placeCaptions); return () => cancelAnimationFrame(frame); }, [fullscreen]);
   function showControls() {
     setControls(true); clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => { if (video.current && !video.current.paused) setControls(false); }, 2600);
+    hideTimer.current = setTimeout(() => { if (!mediaElement.paused) setControls(false); }, 2600);
   }
   useEffect(() => {
     showControls();
@@ -445,7 +438,7 @@ export default function Player({ mediaElement, state, stateFresh, owner, speakin
     <div className="movie-controls">
       <input className="seek" aria-label="Movie position" type="range" min="0" max={Math.max(0, duration - 1)} step="1" value={Math.min(position, duration)} disabled={!owner} onPointerDown={() => { seeking.current = true; }} onKeyDown={() => { seeking.current = true; }} onChange={event => setPosition(Number(event.target.value))} onPointerUp={event => { seeking.current = false; if (owner) control('seek', Number(event.currentTarget.value)); }} onPointerCancel={() => { seeking.current = false; }} onBlur={() => { seeking.current = false; }} onKeyUp={event => { seeking.current = false; if (owner && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) control('seek', Number(event.currentTarget.value)); }} style={{ '--progress': `${Math.min(100, position / duration * 100)}%` } as React.CSSProperties} />
       <div className="movie-control-row"><div className="movie-control-group">
-        {owner && <button className="icon-button" aria-label={needsGesture && mediaPaused ? 'Start playback' : state.paused ? 'Play movie' : 'Pause movie'} onClick={() => { if (needsGesture && mediaPaused) playVideo(true); else { if (state.paused && freshRef.current) createMovieElement(video.current); control(state.paused ? 'play' : 'pause'); } }}>{needsGesture && mediaPaused || state.paused ? <Play size={21} weight="fill" /> : <Pause size={21} weight="fill" />}</button>}
+        {owner && <button className="icon-button" aria-label={needsGesture && mediaPaused ? 'Start playback' : state.paused ? 'Play movie' : 'Pause movie'} onClick={() => { if (needsGesture && mediaPaused) playVideo(true); else { if (state.paused && freshRef.current) createMovieElement(mediaElement); control(state.paused ? 'play' : 'pause'); } }}>{needsGesture && mediaPaused || state.paused ? <Play size={21} weight="fill" /> : <Pause size={21} weight="fill" />}</button>}
         {!owner && needsGesture && mediaPaused && <button className="icon-button" aria-label="Start playback" onClick={() => playVideo(true)}><Play size={21} weight="fill" /></button>}
         {owner && <button className="icon-button" aria-label="Stop movie" title="Stop and choose another movie" disabled={stopping} onClick={stopMovie}>{stopping ? <SpinnerGap size={21} className="spinner" /> : <Stop size={19} weight="fill" />}</button>}
         <button className="icon-button" aria-label={muted ? 'Unmute movie' : 'Mute movie'} onClick={() => setMuted(!muted)}>{muted ? <SpeakerSlash size={21} /> : <SpeakerHigh size={21} />}</button>

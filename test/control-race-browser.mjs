@@ -21,14 +21,14 @@ const { server, party, close } = createApp({ plex, authenticateOwner: header => 
 let browser;
 const playing = () => { const v = document.querySelector('.movie-video'); return v && !v.paused && v.readyState >= 3; };
 const instrument = () => {
-  window.testCaptures = []; window.testTracks = []; window.testPeers = []; window.testSockets = []; window.testPlaybackOffset = 0; window.testPlaybackVersion = 0;
+  window.testCaptures = []; window.testTracks = []; window.testPeers = []; window.testSockets = []; window.testPlaybackVersion = 0;
   const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices), NativePeer = RTCPeerConnection, NativeSocket = WebSocket, nativeFetch = fetch.bind(window);
   navigator.mediaDevices.getUserMedia = async constraints => { window.testCaptures.push(constraints); const stream = await capture(constraints); window.testTracks.push(...stream.getTracks()); return stream; };
   window.RTCPeerConnection = class extends NativePeer { constructor(...args) { super(...args); window.testPeers.push(this); } };
   window.fetch = async (...args) => {
     const response = await nativeFetch(...args);
     if (new URL(response.url).pathname === '/api/playback' && response.ok) {
-      const result = await response.clone().json(); window.testPlaybackOffset = Number(result.offset) || 0; window.testPlaybackVersion = result.mediaVersion;
+      const result = await response.clone().json(); window.testPlaybackVersion = result.mediaVersion;
     }
     return response;
   };
@@ -81,7 +81,7 @@ const assertStable = async (label, expectedCaptures = [1, 1]) => {
   for (let index = 0; index < 12; index++) {
     const state = party.snapshot();
     const readings = await Promise.all(clients.map(page => page.evaluate(() => {
-      const v = document.querySelector('.movie-video'); return { time: v.currentTime + window.testPlaybackOffset, at: Date.now(), paused: v.paused, ready: v.readyState, rate: v.playbackRate, version: window.testPlaybackVersion };
+      const v = document.querySelector('.movie-video'); return { time: v.currentTime, at: Date.now(), paused: v.paused, ready: v.readyState, rate: v.playbackRate, version: window.testPlaybackVersion };
     })));
     const after = party.snapshot();
     const immutable = ['mediaVersion', 'readinessVersion', 'updatedAt', 'position'].every(key => state[key] === after[key]);

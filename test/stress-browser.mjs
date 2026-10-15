@@ -28,16 +28,6 @@ let browser, releaseDelayed;
 const instrument = () => {
   const nativeCapture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices), NativePeer = RTCPeerConnection;
   window.testCaptures = []; window.testTracks = []; window.testPeers = []; window.testPlaybackReports = [];
-  window.testPlaybackOffset = 0;
-  const nativeFetch = window.fetch.bind(window);
-  window.fetch = async (...args) => {
-    const response = await nativeFetch(...args);
-    if (new URL(response.url).pathname === '/api/playback' && response.ok) {
-      const configuration = await response.clone().json();
-      window.testPlaybackOffset = Number(configuration.offset) || 0;
-    }
-    return response;
-  };
   navigator.mediaDevices.getUserMedia = async constraints => {
     window.testCaptures.push(constraints);
     const stream = await nativeCapture(constraints); window.testTracks.push(...stream.getTracks()); return stream;
@@ -123,7 +113,7 @@ const assertStable = async label => {
       assert.equal(state.paused, false, `${label}: playback must not spontaneously become intentionally paused.`);
       const readings = await Promise.all(active().map(client => client.page.evaluate(() => {
         const v = document.querySelector('.movie-video');
-        return { time: v.currentTime + window.testPlaybackOffset, at: Date.now(), paused: v.paused, ready: v.readyState, rate: v.playbackRate };
+        return { time: v.currentTime, at: Date.now(), paused: v.paused, ready: v.readyState, rate: v.playbackRate };
       })));
       // Do not mix an old clock with frames read across a hold/resume or seek.
       const after = party.snapshot();

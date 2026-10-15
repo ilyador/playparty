@@ -156,27 +156,6 @@ try {
   }).catch(() => ({ unavailable: true })) : {};
   console.log(JSON.stringify({ engine: 'WebKit', path: native ? 'native-HLS' : 'Hls.js', result: 'failed', phase, errorType: error.name, shared, streamResponses, playbackModes, manifestSubtitles,
     ...(page ? { media: await page.evaluate(numericState).catch(() => ({ unavailable: true })) } : {}) }));
-  if (native && page && phase === 'playback' && process.env.TEST_NATIVE_PROBE === '1') {
-    const probe = await page.evaluate(async () => {
-      const source = document.querySelector('.movie-video')?.currentSrc;
-      if (!source) return { unavailable: true };
-      const video = document.createElement('video');
-      video.muted = true; video.playsInline = true; video.src = source;
-      document.body.appendChild(video);
-      let playResult = 'pending';
-      video.play().then(() => { playResult = 'resolved'; }).catch(error => { playResult = error.name; });
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      const result = { playResult, readyState: video.readyState, paused: video.paused, currentTime: video.currentTime,
-        duration: Number.isFinite(video.duration) ? video.duration : String(video.duration), width: video.videoWidth, height: video.videoHeight,
-        decodedFrames: video.getVideoPlaybackQuality?.().totalVideoFrames || video.webkitDecodedFrameCount || 0,
-        mediaError: video.error?.code || 0, mseSource: video.currentSrc.startsWith('blob:'),
-        buffered: Array.from({ length: video.buffered.length }, (_, index) => ({ start: video.buffered.start(index), end: video.buffered.end(index) })),
-        tracks: [...video.textTracks].map(track => ({ kind: track.kind, mode: track.mode, cues: track.cues?.length || 0, active: track.activeCues?.length || 0 })) };
-      video.pause(); video.removeAttribute('src'); video.load(); video.remove();
-      return result;
-    });
-    console.log(JSON.stringify({ engine: 'WebKit', path: 'native-HLS', directMediaProbe: probe }));
-  }
   process.exitCode = 1;
 } finally {
   await browser?.close();

@@ -37,18 +37,10 @@ server.prependListener('upgrade', (request, socket) => {
 });
 const instrument = () => {
   navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Physical test devices denied', 'NotAllowedError'); };
-  window.testOffset = 0; window.testSockets = []; window.testLastStateAt = 0; window.testStateMessages = 0; window.testMoviePlayingEvents = 0;
+  window.testSockets = []; window.testLastStateAt = 0; window.testStateMessages = 0; window.testMoviePlayingEvents = 0;
   document.addEventListener('playing', event => { if (event.target?.classList?.contains('movie-video')) window.testMoviePlayingEvents++; }, true);
   const NativeSocket = WebSocket;
   window.WebSocket = class extends NativeSocket { constructor(...args) { super(...args); window.testSockets.push(this); if (new URL(this.url).pathname === '/events') this.addEventListener('message', event => { try { if (JSON.parse(event.data).type === 'state') { window.testLastStateAt = Date.now(); window.testStateMessages++; } } catch {} }); } };
-  const nativeFetch = window.fetch.bind(window);
-  window.fetch = async (...args) => {
-    const response = await nativeFetch(...args);
-    if (new URL(response.url).pathname === '/api/playback' && response.ok) {
-      try { const result = await response.clone().json(); if (Number.isFinite(result.offset)) window.testOffset = result.offset; } catch {}
-    }
-    return response;
-  };
 };
 const mediaState = () => {
   const video = document.querySelector('.movie-video');
@@ -58,7 +50,7 @@ const mediaState = () => {
     const presented = (_now, metadata) => { if (window.testFrameVideo !== video) return; window.testPresentedFrames++; window.testLastFrameTime = metadata.mediaTime; video.requestVideoFrameCallback(presented); };
     video.requestVideoFrameCallback(presented);
   }
-  return { present: true, time: video.currentTime + window.testOffset, relativeTime: video.currentTime, offset: window.testOffset, at: Date.now(),
+  return { present: true, time: video.currentTime, at: Date.now(),
     stateAgeMs: window.testLastStateAt ? Date.now() - window.testLastStateAt : -1, stateMessages: window.testStateMessages || 0,
     ready: video.readyState, paused: video.paused, rate: video.playbackRate, width: video.videoWidth, height: video.videoHeight,
     frames: video.getVideoPlaybackQuality?.().totalVideoFrames || video.webkitDecodedFrameCount || 0,
@@ -119,14 +111,14 @@ const assertStable = async label => {
   }
   assert.ok(Date.now() - stableSince >= 10000 && samples >= 15, `${label}: require ten continuous stable seconds.`);
   assert.ok(lastFrames > firstFrames || lastPresented > firstPresented, `${label}: actual decoded/presented frames must advance, rather than a fake clock.`);
-  if (Number.isFinite(lastSample.lastFrameTime)) assert.ok(Math.abs(lastSample.relativeTime - lastSample.lastFrameTime) < 1, `${label}: the actual presented frame must match the playback clock.`);
+  if (Number.isFinite(lastSample.lastFrameTime)) assert.ok(Math.abs(lastSample.time - lastSample.lastFrameTime) < 1, `${label}: the actual presented frame must match the playback clock.`);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${label}: mobile viewport must not overflow horizontally.`);
   console.log(JSON.stringify({ label, result: 'pass', samples, maxDrift: Number(maxDrift.toFixed(3)), decodedFrames: lastFrames - firstFrames, presentedFrames: lastPresented - firstPresented }));
 };
 const assertCaptions = async label => {
   await page.waitForFunction(() => { const video = document.querySelector('.movie-video'); return video && !video.paused && [...video.textTracks].some(track => track.mode === 'showing' && track.activeCues?.length); }, undefined, { timeout: 45000 });
   const sample = await page.evaluate(mediaState);
-  assert.ok(sample.tracks.some(track => track.mode === 'showing' && track.active.some(cue => cue.start <= sample.relativeTime + 0.25 && cue.end >= sample.relativeTime - 0.25)), `${label}: actual active WebVTT cues must match the decoded movie clock.`);
+  assert.ok(sample.tracks.some(track => track.mode === 'showing' && track.active.some(cue => cue.start <= sample.time + 0.25 && cue.end >= sample.time - 0.25)), `${label}: actual active WebVTT cues must match the decoded movie clock.`);
   assert.ok(sample.frames > 0 && sample.width > 0);
   console.log(JSON.stringify({ label, result: 'pass', tracks: sample.tracks.length, activeCues: sample.tracks.reduce((count, track) => count + track.active.length, 0) }));
 };

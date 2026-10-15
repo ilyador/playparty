@@ -23,7 +23,7 @@ const { server, party, close } = createApp({
     const items = parent === 'series' ? seasons : parent === 'season' ? episodes : catalog;
     return query ? items.filter(item => item.title.toLowerCase().includes(query.toLowerCase())) : items;
   } },
-  origin: base, assetsRoot: path.resolve(process.env.TEST_BUILD_DIR || 'test-results/viewport-build'), recordProgress: false,
+  origin: base, assetsRoot: path.resolve(process.env.TEST_BUILD_DIR || 'dist'), recordProgress: false,
   livekitKey: 'fixture-key', livekitSecret: 'fixture-only-secret'.repeat(2),
   livekitInternalUrl: 'http://127.0.0.1:9', roomName: `viewport-${randomUUID()}`,
 });

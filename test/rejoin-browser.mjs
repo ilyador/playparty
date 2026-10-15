@@ -288,20 +288,20 @@ try {
   await assertCallRetained('Fresh state reconnect');
   console.log('An eight-second stale snapshot paused the client movie, reconnected for current state, and resynchronized without reconnecting the call.');
 
+  const beforeForeground = party.snapshot();
   const socketsBeforeForeground = await guest.evaluate(() => {
     const count = window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length;
-    window.testDropAllStates = true;
     document.dispatchEvent(new Event('visibilitychange'));
     return count;
   });
-  await guest.waitForFunction(count => document.querySelector('.movie-video').paused && window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length > count, socketsBeforeForeground, { timeout: 2000 });
-  await assertCallRetained('Foreground fresh state hold');
-  await guest.evaluate(() => { window.testDropAllStates = false; for (const socket of window.testSockets) socket.testDropStates = false; });
-  for (const page of [owner, guest]) await page.waitForFunction(playing, undefined, { timeout: 60000 });
+  assert.equal(await guest.locator('.movie-video').evaluate(video => video.paused), false, 'A healthy foreground transition cannot pause local playback.');
+  assert.equal(party.readinessVersion, beforeForeground.readinessVersion, 'A healthy foreground transition cannot revoke shared readiness.');
+  assert.equal(party.updatedAt, beforeForeground.updatedAt, 'A healthy foreground transition cannot restart the shared clock.');
+  assert.equal(await guest.evaluate(() => window.testSockets.filter(socket => new URL(socket.url).pathname === '/events').length), socketsBeforeForeground, 'A healthy foreground transition must retain the existing socket.');
   await guest.waitForTimeout(2500);
-  await assertSynchronized('Foreground fresh state');
-  await assertCallRetained('Foreground resume');
-  console.log('Returning to the foreground requested fresh state immediately before movie playback resumed, preserving the existing call.');
+  await assertSynchronized('Healthy foreground');
+  await assertCallRetained('Healthy foreground');
+  console.log('A healthy foreground transition retained movie playback, the shared clock and the existing call.');
   assert.deepEqual(errors, []);
   assert.ok(events.some(event => event.event === 'join-wait'));
 } finally {

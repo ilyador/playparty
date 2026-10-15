@@ -55,7 +55,7 @@ const within = async (promise, message) => {
 const instrument = () => {
   const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices), NativeSocket = WebSocket, NativePeer = RTCPeerConnection, nativeFetch = fetch.bind(window);
   window.testTracks = []; window.testCaptures = 0; window.testSockets = []; window.testPeers = [];
-  window.testPlayback = null; window.testRequest = null; window.testOffset = 0; window.testPlaying = 0;
+  window.testPlayback = null; window.testRequest = null; window.testPlaying = 0;
   navigator.mediaDevices.getUserMedia = async constraints => { window.testCaptures++; const stream = await capture(constraints); window.testTracks.push(...stream.getTracks()); return stream; };
   window.WebSocket = class extends NativeSocket { constructor(...args) { super(...args); window.testSockets.push(this); } };
   window.RTCPeerConnection = class extends NativePeer { constructor(...args) { super(...args); window.testPeers.push(this); } };
@@ -63,7 +63,7 @@ const instrument = () => {
     if (String(args[0]).includes('/api/playback') && typeof args[1]?.body === 'string') window.testRequest = JSON.parse(args[1].body);
     const response = await nativeFetch(...args);
     if (new URL(response.url).pathname === '/api/playback' && response.ok) {
-      window.testPlayback = await response.clone().json(); window.testOffset = Number(window.testPlayback.offset) || 0;
+      window.testPlayback = await response.clone().json();
     }
     return response;
   };
@@ -102,7 +102,7 @@ const assertShared = (count = active().length, outputs = 1) => {
 const sample = () => {
   const video = document.querySelector('.movie-video');
   if (!video) return { present: false };
-  return { present: true, time: video.currentTime + window.testOffset, at: Date.now(), paused: video.paused, ready: video.readyState,
+  return { present: true, time: video.currentTime, at: Date.now(), paused: video.paused, ready: video.readyState,
     rate: video.playbackRate, frames: video.getVideoPlaybackQuality().totalVideoFrames, width: video.videoWidth,
     version: window.testPlayback?.mediaVersion, outputId: window.testPlayback?.outputId };
 };

@@ -152,7 +152,6 @@ export class Plex {
     const id = randomUUID();
     this.resources.set(id, { streamId: stream.id, target: targetPath, ...(playlist === undefined ? {} : { playlist }) });
     stream.targets.set(targetPath, id);
-    stream.resourceIds.add(id);
     return `/api/stream/${id}`;
   }
 
@@ -168,7 +167,6 @@ export class Plex {
 
   cancelStart(pending) {
     if (!pending) return;
-    pending.cancelled = true;
     pending.abort.abort();
     if (pending.provisional) return this.release(pending.assignment);
   }
@@ -196,9 +194,8 @@ export class Plex {
     producer.retired = true;
     producer.abort.abort();
     if (this.producers.get(producer.key) === producer) this.producers.delete(producer.key);
-    for (const id of producer.resourceIds) this.resources.delete(id);
+    for (const id of producer.targets.values()) this.resources.delete(id);
     producer.targets.clear();
-    producer.resourceIds.clear();
     for (const assignment of producer.leases) {
       assignment.released = true;
       assignment.abort.abort();
@@ -235,11 +232,11 @@ export class Plex {
 
   async start(identity, movie, { position = 0, hevc = false, maxBitrate = 50000, subtitleId = '', remote, adaptive = false, forceTranscode = false } = {}) {
     this.cancelStart(this.pendingStarts.get(identity));
-    const pending = { abort: new AbortController(), cancelled: false, provisional: false };
+    const pending = { abort: new AbortController(), provisional: false };
     this.pendingStarts.set(identity, pending);
     let cancelReady;
     const active = () => {
-      if (pending.cancelled || this.pendingStarts.get(identity) !== pending || pending.assignment?.released) throw Object.assign(new Error('The stream changed. Reconnect to watch.'), { status: 409 });
+      if (pending.abort.signal.aborted || this.pendingStarts.get(identity) !== pending || pending.assignment?.released) throw Object.assign(new Error('The stream changed. Reconnect to watch.'), { status: 409 });
     };
     try {
       const item = await this.metadata(movie.id, { signal: AbortSignal.any([pending.abort.signal, AbortSignal.timeout(20000)]) });
@@ -271,7 +268,7 @@ export class Plex {
         const id = randomUUID();
         const session = `playparty-${randomUUID()}`;
         producer = { id, key, session, client: `playparty-output-${id}`, version: movie.version,
-          resourceIds: new Set(), targets: new Map(), leases: new Set(), abort: new AbortController(), retired: false };
+          targets: new Map(), leases: new Set(), abort: new AbortController(), retired: false };
         this.producers.set(key, producer);
         params.set('offset', String(Math.max(0, position)));
         params.set('session', session);
@@ -300,10 +297,8 @@ export class Plex {
           return {
             url: this.addResource(output, start.toString(), playlist),
             outputId: output.id,
-            offset: 0,
             ...(bandwidth > 0 ? { bandwidth } : {}),
             quality: video?.decision === 'copy' ? 'Original video' : 'Optimized video',
-            kind: 'hls',
             subtitleMode: subtitle ? subtitle.burn ? 'burn' : 'segmented' : 'none',
           };
         })().catch(async error => { await this.invalidate(output); throw error; });
@@ -312,7 +307,7 @@ export class Plex {
       const assignment = previous?.producer === producer && !previous.released ? previous : {
         identity, producer, id: producer.id, session: producer.session, client: producer.client, version: producer.version,
         abort: new AbortController(),
-        resourceIds: producer.resourceIds, targets: producer.targets, get diagnostics() { return producer.diagnostics; },
+        targets: producer.targets, get diagnostics() { return producer.diagnostics; },
       };
       pending.assignment = assignment;
       pending.provisional = assignment !== previous;
@@ -330,7 +325,7 @@ export class Plex {
       return result;
     } catch (error) {
       if (pending.provisional) await this.release(pending.assignment);
-      if (pending.cancelled) throw Object.assign(new Error('The stream changed. Reconnect to watch.'), { status: 409 });
+      if (pending.abort.signal.aborted) throw Object.assign(new Error('The stream changed. Reconnect to watch.'), { status: 409 });
       throw error;
     } finally {
       if (cancelReady) pending.abort.signal.removeEventListener('abort', cancelReady);

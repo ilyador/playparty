@@ -75,7 +75,7 @@ export default function App() {
     if (!joined) return;
     let disposed = false;
     let reconnect: ReturnType<typeof setTimeout> | undefined;
-    let lastStateAt = performance.now();
+    let lastStateAt = Date.now();
     let lastPingAt = 0;
     const pendingDiagnostics = new Map<string, object>();
     leaveRef.current = false;
@@ -86,15 +86,16 @@ export default function App() {
       if (disposed || leaveRef.current) return;
       clearTimeout(reconnect);
       invalidateState();
-      lastStateAt = performance.now();
+      lastStateAt = Date.now();
       let receivedState = false;
       let bestPongRtt = Infinity;
+      let serverClockOffset: number | undefined;
       const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/events`);
       socket.current = ws;
       ws.onopen = () => {
         if (disposed || leaveRef.current || socket.current !== ws) { ws.close(); return; }
         ws.send(JSON.stringify({ type: 'ping', sent: Date.now() }));
-        lastPingAt = performance.now();
+        lastPingAt = Date.now();
         for (const sample of pendingDiagnostics.values()) ws.send(JSON.stringify({ type: 'telemetry', ...sample }));
         pendingDiagnostics.clear();
       };
@@ -102,7 +103,11 @@ export default function App() {
         if (disposed || leaveRef.current || socket.current !== ws) return;
         const message = JSON.parse(event.data);
         if (message.type === 'state') {
-          lastStateAt = performance.now();
+          const now = Date.now();
+          // A suspended tab can receive queued snapshots before visibilitychange.
+          // Their server timestamps must not make an old timeline fresh again.
+          if (serverClockOffset !== undefined && Number.isFinite(message.serverTime) && now + serverClockOffset - message.serverTime >= 8000) { replaceEvents(); return; }
+          lastStateAt = now;
           setState(message);
           if (!receivedState) { receivedState = true; setConnectionVersion(version => version + 1); }
           setStateFresh(true);
@@ -113,7 +118,8 @@ export default function App() {
           // only prompt samples near this socket's best observed round trip.
           if (Number.isFinite(message.sent) && Number.isFinite(message.serverTime) && rtt >= 0 && rtt <= 1000 && rtt <= bestPongRtt + 100) {
             bestPongRtt = Math.min(bestPongRtt, rtt);
-            setClockOffset(message.serverTime - (now + message.sent) / 2);
+            serverClockOffset = message.serverTime - (now + message.sent) / 2;
+            setClockOffset(serverClockOffset);
           }
         }
       };
@@ -146,18 +152,20 @@ export default function App() {
     };
     connectEvents();
     // Healthy checks are local; pings keep their ten-second cadence.
-    const heartbeat = setInterval(() => {
-      if (disposed || leaveRef.current || !socket.current) return;
+    const checkEvents = () => {
+      if (disposed || leaveRef.current) return;
       const ws = socket.current;
-      const now = performance.now();
-      if (now - lastStateAt >= 8000) {
+      if (!ws) { connectEvents(); return; }
+      const now = Date.now();
+      if (ws.readyState > WebSocket.OPEN || now - lastStateAt >= 8000) {
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'telemetry', event: 'state-stale' }));
         replaceEvents();
       } else if (ws.readyState === WebSocket.OPEN && now - lastPingAt >= 10000) {
         lastPingAt = now; ws.send(JSON.stringify({ type: 'ping', sent: Date.now() }));
       }
-    }, 2000);
-    const foreground = () => { if (document.visibilityState === 'visible') replaceEvents(); };
+    };
+    const heartbeat = setInterval(checkEvents, 2000);
+    const foreground = () => { if (document.visibilityState === 'visible') checkEvents(); };
     document.addEventListener('visibilitychange', foreground);
     const room = new Room({
       adaptiveStream: true, dynacast: true,
