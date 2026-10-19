@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 
-function player({ readOnlyVolume = false } = {}) {
+// 'writable' is desktop Chrome/Firefox, where ':volume-locked' is not a valid selector.
+// 'locked' is iPhone WebKit: a write reads back until Safari's queued revert runs.
+// 'ignored' is any browser that drops volume writes outright.
+function player({ volume: model = 'writable' } = {}) {
   let time = 0, id = 0, volume = 1;
   const frames = new Map(), timers = new Map();
   const diagnostics = [];
@@ -13,7 +16,16 @@ function player({ readOnlyVolume = false } = {}) {
   vm.runInNewContext(code, { exports, performance: { now: () => time },
     requestAnimationFrame: fn => { const next = ++id; frames.set(next, fn); return next; }, cancelAnimationFrame: id => frames.delete(id),
     setTimeout: (fn, delay) => { const next = ++id; timers.set(next, { fn, at: time + delay }); return next; }, clearTimeout: id => timers.delete(id) });
-  const video = { muted: false, get volume() { return volume; }, set volume(value) { if (!readOnlyVolume) volume = value; } };
+  const video = { muted: false,
+    matches(selector) {
+      if (model === 'locked') return selector === ':volume-locked';
+      throw new SyntaxError(`'${selector}' is not a valid selector.`);
+    },
+    get volume() { return volume; },
+    set volume(value) {
+      if (model === 'writable') volume = value;
+      else if (model === 'locked') { volume = value; timers.set(++id, { fn: () => { volume = 1; }, at: time }); }
+    } };
   const controller = exports.movieAudio(video, sample => diagnostics.push(structuredClone(sample)));
   const advance = ms => { const end = time + ms; while (time < end) { time = Math.min(end, time + 16); for (const [id, timer] of timers) if (timer.at <= time) { timers.delete(id); timer.fn(); } const pending = [...frames]; frames.clear(); for (const [, fn] of pending) fn(time); } };
   return { video, controller, advance, diagnostics };
@@ -34,53 +46,28 @@ test('movie fades for speech, holds through short pauses and restores without ch
   assert.equal(video.volume, 1); assert.equal(video.muted, false);
 });
 
-test('read-only iOS volume falls back to movie-only mute and preserves the viewer’s mute choice', () => {
-  const { video, controller, advance } = player({ readOnlyVolume: true });
-  controller.setSpeech(true); advance(320); assert.equal(video.muted, true); assert.equal(video.volume, 1);
-  controller.setSpeech(false); advance(1300); assert.equal(video.muted, false);
-  controller.setSpeech(true); advance(320); controller.setMuted(true);
-  controller.setSpeech(false); advance(1300); assert.equal(video.muted, true);
-  controller.dispose(); assert.equal(video.muted, true);
-});
-
-test('brief speech detections never interrupt a movie when iOS volume is read-only', () => {
-  const { video, controller, advance, diagnostics } = player({ readOnlyVolume: true });
-  for (let i = 0; i < 6; i++) {
-    controller.setSpeech(true); advance(160);
-    controller.setSpeech(false); advance(900);
+test('fixed movie volume, including iPhone’s read-back writes, is reported and never cut by speech', () => {
+  for (const volume of ['locked', 'ignored']) {
+    const { video, controller, advance, diagnostics } = player({ volume });
+    controller.setSpeech(true); advance(2000);
+    assert.equal(video.muted, false, `${volume}: sustained speech must not cut the movie; call audio raises voices instead.`);
+    controller.setSpeech(false); advance(1500); controller.setSpeech(true); advance(500);
     assert.equal(video.muted, false);
+    assert.ok(diagnostics.every(sample => sample.volumeWritable === false), `${volume}: diagnostics must report fixed movie volume.`);
+    assert.equal(diagnostics.some(sample => sample.ducked || sample.movieMuted), false);
+    assert.ok(diagnostics.every(sample => Object.keys(sample).sort().join(',') === 'ducked,event,movieMuted,speech,volumeWritable'));
   }
-  advance(2000);
-  assert.equal(diagnostics.some(sample => sample.movieMuted), false);
-  assert.equal(diagnostics.some(sample => sample.ducked), false);
 });
 
-test('qualified iOS speech stays muted through short pauses and restores once after sustained silence', () => {
-  const { video, controller, advance, diagnostics } = player({ readOnlyVolume: true });
-  controller.setSpeech(true); advance(160); controller.setSpeech(true); advance(160);
-  assert.equal(video.muted, true, 'Repeated true signals must not postpone qualification.');
-  for (let i = 0; i < 4; i++) {
-    controller.setSpeech(false); advance(900);
-    assert.equal(video.muted, true, 'Short pauses must not fragment movie audio.');
-    controller.setSpeech(true); advance(160);
-  }
-  controller.setSpeech(false); advance(900); controller.setSpeech(false); advance(400);
-  assert.equal(video.muted, false, 'Repeated false signals must not postpone restoration.');
-  const muteTransitions = diagnostics.filter((sample, i) => i === 0 || sample.movieMuted !== diagnostics[i - 1].movieMuted).map(sample => sample.movieMuted);
-  assert.deepEqual(muteTransitions, [false, true, false]);
-  assert.ok(diagnostics.every(sample => Object.keys(sample).sort().join(',') === 'ducked,event,movieMuted,speech,volumeWritable'));
-});
-
-test('disposal cancels pending iOS speech qualification and preserves personal mute through silence', () => {
-  const first = player({ readOnlyVolume: true });
-  first.controller.setSpeech(true); first.advance(160); first.controller.dispose(); first.advance(2000);
-  assert.equal(first.video.muted, false);
-  const count = first.diagnostics.length;
-  first.controller.setSpeech(true); first.controller.setMuted(true); first.advance(2000);
-  assert.equal(first.video.muted, false); assert.equal(first.diagnostics.length, count);
-
-  const second = player({ readOnlyVolume: true });
-  second.controller.setMuted(true); second.controller.setSpeech(true); second.advance(320);
-  second.controller.setSpeech(false); second.advance(160); second.controller.dispose(); second.advance(2000);
-  assert.equal(second.video.muted, true);
+test('personal movie mute still works when movie volume is fixed', () => {
+  const { video, controller, advance, diagnostics } = player({ volume: 'locked' });
+  controller.setMuted(true); assert.equal(video.muted, true);
+  controller.setSpeech(true); advance(2000); controller.setSpeech(false); advance(1500);
+  assert.equal(video.muted, true, 'Speech must not change the viewer’s mute choice.');
+  controller.setMuted(false); assert.equal(video.muted, false);
+  controller.setMuted(true); controller.dispose(); advance(2000);
+  assert.equal(video.muted, true);
+  const count = diagnostics.length;
+  controller.setMuted(false); controller.setSpeech(true); advance(500);
+  assert.equal(video.muted, true); assert.equal(diagnostics.length, count, 'A disposed controller must stay inert.');
 });

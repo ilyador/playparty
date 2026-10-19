@@ -58,11 +58,74 @@ export type CallAudioDiagnostic = {
   callAudioPlaying: number;
   callAudioDuplicates: number;
   callAudioUnexpected: number;
+  callAudioBoosted?: boolean;
 };
+
+function volumeLocked(element: HTMLMediaElement) {
+  try { return element.matches(':volume-locked'); } catch { return false; }
+}
+
+// iPhone Safari ignores media volume, so the movie cannot be lowered while
+// people talk. Raise their voices instead. The mix still plays as MediaStream
+// audio through an element, which Safari echo-cancels like the voices
+// themselves; Web Audio's own speaker output would not be.
+function voiceBoost(container: HTMLElement, onChange: () => void) {
+  const context = new AudioContext({ latencyHint: 'interactive' });
+  const gain = context.createGain(), limiter = context.createDynamicsCompressor();
+  const mix = context.createMediaStreamDestination();
+  // With the limiter's makeup gain, about +11 dB: slightly more than
+  // desktop's balance of a 30% movie under speech.
+  gain.gain.value = 3;
+  limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = 20;
+  limiter.attack.value = 0.002; limiter.release.value = 0.2;
+  gain.connect(limiter).connect(mix);
+  const output = document.createElement('audio');
+  output.autoplay = true; output.className = 'call-audio'; output.srcObject = mix.stream;
+  container.appendChild(output);
+  const voices = new Map<HTMLMediaElement, MediaStreamAudioSourceNode>();
+  const gestures = ['click', 'touchend'], outputEvents = ['playing', 'pause'], directEvents = ['playing', 'volumechange'];
+  let active = false;
+  function update() {
+    // Safari starts audio without a tap while the microphone captures.
+    if (context.state !== 'running' && context.state !== 'closed') context.resume().catch(() => {});
+    if (output.paused) output.play().catch(() => {});
+    // Direct playback stays audible until the boosted mix is. Room.startAudio()
+    // unmutes direct elements, so a boosted voice is muted again here.
+    const next = context.state === 'running' && !output.paused;
+    for (const element of voices.keys()) if (element.muted !== next) element.muted = next;
+    if (next !== active) { active = next; onChange(); }
+  }
+  function remove(element: HTMLMediaElement) {
+    voices.get(element)?.disconnect(); voices.delete(element);
+    for (const event of directEvents) element.removeEventListener(event, update);
+  }
+  context.addEventListener('statechange', update);
+  for (const event of outputEvents) output.addEventListener(event, update);
+  for (const event of gestures) container.addEventListener(event, update);
+  return {
+    get active() { return active; },
+    add(element: HTMLMediaElement, track: MediaStreamTrack) {
+      const voice = context.createMediaStreamSource(new MediaStream([track]));
+      voice.connect(gain); voices.set(element, voice);
+      for (const event of directEvents) element.addEventListener(event, update);
+      update();
+    },
+    remove,
+    dispose() {
+      for (const element of [...voices.keys()]) remove(element);
+      context.removeEventListener('statechange', update);
+      for (const event of outputEvents) output.removeEventListener(event, update);
+      for (const event of gestures) container.removeEventListener(event, update);
+      output.remove(); context.close().catch(() => {});
+    },
+  };
+}
 
 export function remoteCallAudio(container: HTMLElement, onDiagnostic?: (sample: CallAudioDiagnostic) => void) {
   type Record = { track: RemoteTrack; element: HTMLAudioElement; publisher?: string; stopObserving: () => void };
   const elements = new Map<string, Record>();
+  // Created for the first voice on a volume-locked browser; null if Safari refused it.
+  let boost: ReturnType<typeof voiceBoost> | null | undefined;
   let previousDiagnostic = '';
   function report() {
     if (!onDiagnostic) return;
@@ -85,11 +148,12 @@ export function remoteCallAudio(container: HTMLElement, onDiagnostic?: (sample: 
       callAudioDuplicates: [...sources.values()].reduce((count, source) => count + Math.max(0, source.size - 1), 0),
       callAudioUnexpected: unexpected,
     };
+    if (boost) sample.callAudioBoosted = boost.active;
     const key = JSON.stringify(sample);
     if (key !== previousDiagnostic) { previousDiagnostic = key; onDiagnostic(sample); }
   }
   function remove(record: Record) {
-    record.stopObserving();
+    record.stopObserving(); boost?.remove(record.element);
     record.track.detach(record.element); record.element.remove();
   }
   return {
@@ -108,6 +172,11 @@ export function remoteCallAudio(container: HTMLElement, onDiagnostic?: (sample: 
         for (const event of events) element.removeEventListener(event, report);
         track.off('elementAttached', report); track.off('elementDetached', report);
       } });
+      // A refused boost leaves the voice on direct playback.
+      if (boost === undefined && volumeLocked(element)) {
+        try { boost = voiceBoost(container, report); } catch { boost = null; }
+      }
+      try { boost?.add(element, track.mediaStreamTrack); } catch {}
       report();
       return element;
     },
@@ -119,6 +188,6 @@ export function remoteCallAudio(container: HTMLElement, onDiagnostic?: (sample: 
       if (record?.track !== track) return;
       remove(record); elements.delete(track.sid); report();
     },
-    dispose() { for (const record of elements.values()) remove(record); elements.clear(); report(); },
+    dispose() { for (const record of elements.values()) remove(record); elements.clear(); boost?.dispose(); boost = undefined; report(); },
   };
 }

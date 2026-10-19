@@ -13,11 +13,14 @@ export function movieAudio(video: HTMLVideoElement, onDiagnostic?: (sample: Movi
   let ducked = false;
   let disposed = false;
   let frame = 0;
-  let speechTimer: ReturnType<typeof setTimeout> | undefined;
   let restoreTimer: ReturnType<typeof setTimeout> | undefined;
   let previousDiagnostic = '';
+  // iPhone Safari keeps movie volume on the hardware buttons, yet a write
+  // reads back until Safari reverts it. Only WebKit knows ':volume-locked'.
+  let lockedVolume = false;
+  try { lockedVolume = video.matches(':volume-locked'); } catch {}
   let writableVolume = false;
-  try {
+  if (!lockedVolume) try {
     video.volume = originalVolume === 0.5 ? 0.4 : 0.5;
     writableVolume = Math.abs(video.volume - (originalVolume === 0.5 ? 0.4 : 0.5)) < 0.001;
     video.volume = originalVolume;
@@ -33,7 +36,7 @@ export function movieAudio(video: HTMLVideoElement, onDiagnostic?: (sample: Movi
 
   function apply() {
     cancelAnimationFrame(frame);
-    video.muted = muted || (!writableVolume && ducked);
+    video.muted = muted;
     report();
     if (!writableVolume) return;
     const from = video.volume;
@@ -54,21 +57,15 @@ export function movieAudio(video: HTMLVideoElement, onDiagnostic?: (sample: Movi
     setSpeech(speaking: boolean) {
       if (disposed || speech === speaking) return;
       speech = speaking;
-      clearTimeout(speechTimer);
       clearTimeout(restoreTimer);
-      if (speaking && !ducked) {
-        // iOS volume can be read-only, which makes ducking an abrupt mute.
-        // Require a sustained speech signal before interrupting the movie.
-        if (!writableVolume) speechTimer = setTimeout(() => { ducked = true; apply(); }, 300);
-        else { ducked = true; apply(); }
-      } else if (!speaking && ducked) {
-        restoreTimer = setTimeout(() => { ducked = false; apply(); }, writableVolume ? 800 : 1200);
-      }
+      // Fixed movie volume is left alone; call audio raises the voices instead.
+      if (writableVolume && speaking && !ducked) { ducked = true; apply(); }
+      else if (writableVolume && !speaking && ducked) restoreTimer = setTimeout(() => { ducked = false; apply(); }, 800);
       report();
     },
     dispose() {
       disposed = true; speech = false; ducked = false;
-      clearTimeout(speechTimer); clearTimeout(restoreTimer); cancelAnimationFrame(frame);
+      clearTimeout(restoreTimer); cancelAnimationFrame(frame);
       video.muted = muted;
       if (writableVolume) video.volume = originalVolume;
       report();
