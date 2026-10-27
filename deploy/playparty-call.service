@@ -6,7 +6,8 @@ After=network-online.target
 Type=simple
 WorkingDirectory=%h/Dev/playparty
 ExecStart=%h/Dev/playparty/bin/livekit-server --config %h/Dev/playparty/data/livekit.yaml
-Restart=on-failure
+# LiveKit can exit with status 0 when external-IP discovery fails during boot.
+Restart=always
 RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
