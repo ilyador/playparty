@@ -4,6 +4,8 @@
 
 A movie and a video call for you and your friends. Open one URL, enter your name, and join. The host picks what plays; playback stays synchronized and everyone chooses their own subtitles.
 
+Everyone in the party can pause and resume the movie for the group. The host controls seeking and movie selection. Use the arrows beside the microphone and camera buttons to select your input sources, including while muted or with the camera off.
+
 Remote viewers adapt independently to the connection, and matching streams share one Plex output at their selected quality. Local playback keeps the highest compatible quality, and your other Plex apps keep their existing settings.
 
 ![Playparty playing a cat movie with cats in the video call](docs/screenshots/playparty.png)

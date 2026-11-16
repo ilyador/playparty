@@ -284,10 +284,14 @@ export function createApp({ plex, authenticateOwner = async () => true, localAut
     await Promise.all([stopping, progress]);
     res.json(party.snapshot());
   });
-  app.post('/api/control', requireMember, requireHost, async (req, res) => {
+  app.post('/api/control', requireMember, (req, res, next) => {
+    // Joined viewers share pause/resume. Seeking still requires host access.
+    if (!req.member.owner && ['play', 'pause'].includes(req.body?.action)) return next();
+    return requireHost(req, res, next);
+  }, async (req, res) => {
     if (!['play', 'pause', 'seek'].includes(req.body?.action)) return res.status(400).json({ error: 'Unknown playback action.' });
     const version = party.mediaVersion;
-    party.control(req.body.action, req.body.position);
+    party.control(req.body.action, req.member.owner ? req.body.position : undefined);
     const stopping = party.mediaVersion !== version ? stopPlayback() : Promise.resolve();
     logPlayback({ event: 'control', action: req.body.action, mediaVersion: party.mediaVersion, position: party.currentPosition() });
     if (req.body.action !== 'pause') armReadyTimeout();

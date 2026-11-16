@@ -100,6 +100,13 @@ input::placeholder { color: #9298a1; opacity: 1; }
 .call-controls { display: flex; align-items: center; gap: 10px; }
 .call-button { width: 50px; height: 50px; display: grid; place-items: center; border-radius: 12px; background: #25282d; }
 .call-button.device-off { color: #c4c9d0; background: #363a40; }
+.call-device-group { display: flex; align-items: stretch; }
+.call-device-group .call-button { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.device-picker { position: relative; display: grid; place-items: center; width: 28px; flex-shrink: 0; border-radius: 0 12px 12px 0; background: #25282d; color: #c4c9d0; }
+.device-picker select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font: inherit; font-size: 16px; }
+.device-picker:focus-within { outline: 2px solid #eeefec; outline-offset: 4px; }
+.device-picker.unavailable { opacity: .45; }
+.device-picker select:disabled { cursor: default; }
 .call-button.hangup { width: 66px; background: #b74543; color: #fff0e9; }
 .controls-divider { width: 1px; height: 24px; background: #34373c; margin: 0 6px; }
 .footer-action { justify-self: end; }
@@ -172,6 +179,7 @@ input::placeholder { color: #9298a1; opacity: 1; }
 @media (hover: hover) and (pointer: fine) {
   .icon-button:hover, .choose-button:hover, .episode:hover { background: rgba(255,255,255,.08); }
   .call-button:hover { background: #383d44; }
+  .device-picker:hover:not(.unavailable) { background: #383d44; }
   .call-button.hangup:hover { background: #cb5350; }
   .secondary-button:hover { background: #383c43; }
   .join-button:hover:not(:disabled) { background: #f6f6f0; }
@@ -227,6 +235,7 @@ input::placeholder { color: #9298a1; opacity: 1; }
   .footer-content { display: none; }
   .call-controls { gap: 7px; }
   .call-button { width: 46px; height: 46px; border-radius: 10px; }
+  .device-picker { border-radius: 0 10px 10px 0; }
   .call-button.hangup { width: 54px; }
   .controls-divider { margin: 0 3px; }
   .choose-button { width: 46px; height: 46px; justify-content: center; background: #25282d; }
@@ -286,6 +295,8 @@ input::placeholder { color: #9298a1; opacity: 1; }
 .app:is(:fullscreen, .is-fullscreen).watching .call-controls { gap: 6px; }
 .app:is(:fullscreen, .is-fullscreen).watching .call-button { width: 40px; height: 40px; border-radius: 8px; background: rgba(37,40,45,.9); }
 .app:is(:fullscreen, .is-fullscreen).watching .call-button.hangup { width: 46px; background: #b74543; }
+.app:is(:fullscreen, .is-fullscreen).watching .device-picker { border-radius: 0 8px 8px 0; background: rgba(37,40,45,.9); }
+.app:is(:fullscreen, .is-fullscreen).watching .call-device-group .call-button { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .app:is(:fullscreen, .is-fullscreen).watching .controls-divider { margin: 0 3px; }
 @media (max-width: 600px) {
   .app:is(:fullscreen, .is-fullscreen).watching .call-footer { bottom: 76px; }
@@ -314,6 +325,9 @@ input::placeholder { color: #9298a1; opacity: 1; }
   .watching .footer-content { display: none; }
   .watching .call-controls { flex-direction: column; align-items: center; gap: 8px; height: 100%; }
   .watching .call-device-controls { display: flex; flex-direction: column; gap: 8px; }
+  .watching .call-device-group { position: relative; }
+  .watching .device-picker { position: absolute; right: 44px; top: 0; bottom: 0; border-radius: 9px 0 0 9px; background: rgba(37,40,45,.9); }
+  .watching .call-device-group .call-button { border-radius: 0 9px 9px 0; }
   .watching .call-button, .watching .call-button.hangup { width: 44px; height: 44px; border-radius: 9px; background: rgba(37,40,45,.9); }
   .watching .call-button.hangup { margin-top: auto; background: #b74543; }
   .watching .controls-divider { display: none; }
@@ -341,4 +355,6 @@ input::placeholder { color: #9298a1; opacity: 1; }
   .app:is(:fullscreen, .is-fullscreen).watching .footer-action { display: block; }
   .app:is(:fullscreen, .is-fullscreen).watching .call-controls { flex-direction: column; height: 100%; gap: 8px; }
   .app:is(:fullscreen, .is-fullscreen).watching .call-button, .app:is(:fullscreen, .is-fullscreen).watching .call-button.hangup { width: 44px; height: 44px; }
+  .app:is(:fullscreen, .is-fullscreen).watching .call-device-group .call-button { border-radius: 0 9px 9px 0; }
+  .app:is(:fullscreen, .is-fullscreen).watching .device-picker { border-radius: 9px 0 0 9px; }
 }

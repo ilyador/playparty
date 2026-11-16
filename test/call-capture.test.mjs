@@ -210,3 +210,34 @@ test('leaving before SDK publication is registered still removes a publication t
   assert.equal(device.readyState, 'ended');
   assert.equal(unpublishes, 2, 'An early completed unpublish must not suppress post-publication cleanup.');
 });
+
+test('a source change that finishes after Leave stops the restarted track', async () => {
+  for (const kind of ['audio', 'video']) {
+    const device = track(kind), changed = deferred();
+    const capture = controller({ createTracks: async () => [device], publishTrack: async () => {}, unpublishTrack: async () => {} });
+    await capture.start();
+    const pending = capture.switchDevice(device, async () => {
+      await changed.promise;
+      device.readyState = 'live'; // The SDK replaces the underlying native track.
+      return true;
+    });
+    capture.dispose();
+    changed.resolve();
+    assert.equal(await pending, true);
+    assert.equal(device.readyState, 'ended');
+    let attempted = false;
+    assert.equal(await capture.switchDevice(device, async () => { attempted = true; return true; }), false);
+    assert.equal(attempted, false);
+  }
+});
+
+test('failed source changes preserve the other device and allow another selection', async () => {
+  const microphone = track('audio'), camera = track('video');
+  const capture = controller({ createTracks: async () => [microphone, camera], publishTrack: async () => {}, unpublishTrack: async () => {} });
+  await capture.start();
+  await assert.rejects(capture.switchDevice(camera, async () => { throw new Error('Device unplugged'); }), /Device unplugged/);
+  assert.equal(microphone.readyState, 'live');
+  assert.equal(camera.readyState, 'live');
+  assert.equal(await capture.switchDevice(camera, async () => true), true);
+  capture.dispose();
+});

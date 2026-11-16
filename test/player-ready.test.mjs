@@ -11,6 +11,26 @@ const playerCode = ts.transpileModule(fs.readFileSync(new URL('../src/Player.tsx
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
+test('viewer playback controls pause, resume and cancel buffering while seeking and Stop stay unavailable', () => {
+  const party = new Party();
+  const viewer = party.join('Viewer', false);
+  viewer.connected = true;
+  party.select({ id: 'movie', title: 'Movie', duration: 120 });
+  const player = mountPlayer(party, viewer);
+  assert.equal(player.control('Movie position').disabled, true);
+  assert.equal(player.control('Stop movie'), undefined);
+  player.control('Pause movie').onClick();
+  assert.equal(player.posts.at(-1).body.action, 'pause', 'Pause cancels waiting for readiness.');
+  party.markReady(viewer.id, party.mediaVersion); player.render();
+  player.control('Pause movie').onClick();
+  assert.equal(player.posts.at(-1).body.action, 'pause');
+  party.control('pause'); player.render();
+  player.control('Play movie').onClick();
+  assert.equal(player.posts.at(-1).body.action, 'play');
+  player.setFresh(false);
+  assert.equal(player.control('Play movie').disabled, true);
+});
+
 // Run the real Player effects against a deterministic native media fixture.
 // These tests cover readiness bookkeeping, not Safari's decoder or autoplay.
 function mountPlayer(party, member, { currentTime = party.position, bufferedEnd = 16, bufferedRanges = [[0, bufferedEnd]], engine = 'native' } = {}) {

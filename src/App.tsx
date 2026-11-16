@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AudioPresets, Room, RoomEvent, Track, VideoPresets, type LocalAudioTrack, type Participant } from 'livekit-client';
 import { ArrowRight, FilmSlate, Microphone, MicrophoneSlash, PhoneDisconnect, SpinnerGap, VideoCamera, VideoCameraSlash } from '@phosphor-icons/react';
 import { Face } from './Call';
+import DevicePicker from './DevicePicker';
 import Library from './Library';
 import Player from './Player';
 import { callCapture, captureErrorName } from './call-capture';
@@ -26,6 +27,9 @@ export default function App() {
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [camera, setCamera] = useState(false);
   const [devicesReady, setDevicesReady] = useState(false);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [deviceBusy, setDeviceBusy] = useState(false);
+  const [sources, setSources] = useState({ mic: '', camera: '' });
   const [speaking, setSpeaking] = useState(false);
   const [connection, setConnection] = useState('Connecting');
   const [clockOffset, setClockOffset] = useState(0);
@@ -38,6 +42,26 @@ export default function App() {
   const socket = useRef<WebSocket | null>(null);
   const leaveRef = useRef(false);
   const movieElement = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    if (!joined || !navigator.mediaDevices?.enumerateDevices) return;
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const inputs = await navigator.mediaDevices.enumerateDevices();
+        if (disposed) return;
+        setDevices(inputs);
+        const participant = call.current?.localParticipant;
+        setSources({
+          mic: call.current?.getActiveDevice('audioinput') || participant?.getTrackPublication(Track.Source.Microphone)?.audioTrack?.mediaStreamTrack.getSettings().deviceId || '',
+          camera: call.current?.getActiveDevice('videoinput') || participant?.getTrackPublication(Track.Source.Camera)?.videoTrack?.mediaStreamTrack.getSettings().deviceId || '',
+        });
+      } catch { if (!disposed) setDevices([]); }
+    };
+    void refresh();
+    navigator.mediaDevices.addEventListener('devicechange', refresh);
+    return () => { disposed = true; navigator.mediaDevices.removeEventListener('devicechange', refresh); };
+  }, [joined?.identity, devicesReady, mic, camera]);
 
   useEffect(() => {
     if (joined) return;
@@ -80,6 +104,7 @@ export default function App() {
     const pendingDiagnostics = new Map<string, object>();
     leaveRef.current = false;
     setDevicesReady(false);
+    setDeviceBusy(false);
     setAudioBlocked(false);
     const invalidateState = () => { movieElement.current?.pause(); setStateFresh(false); };
     const connectEvents = () => {
@@ -212,6 +237,10 @@ export default function App() {
     };
     room.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => { if (!disposed) remoteAudio.attach(track, participant.identity); refresh(); });
     room.on(RoomEvent.ActiveSpeakersChanged, refresh);
+    room.on(RoomEvent.ActiveDeviceChanged, (kind, deviceId) => {
+      if (disposed || leaveRef.current || kind === 'audiooutput') return;
+      setSources(previous => ({ ...previous, [kind === 'audioinput' ? 'mic' : 'camera']: deviceId }));
+    });
     room.on(RoomEvent.TrackUnsubscribed, track => {
       remoteAudio.detach(track);
       refresh();
@@ -296,6 +325,7 @@ export default function App() {
     const participant = room.localParticipant;
     const currentSession = () => call.current === room && captureSession.current === capture && capture.active && !leaveRef.current;
     togglingDevice.current = room;
+    setDeviceBusy(true);
     try {
       if (kind === 'mic') {
         const microphone = participant.getTrackPublication(Track.Source.Microphone)?.audioTrack;
@@ -317,7 +347,26 @@ export default function App() {
       }
       setNotice(''); setParticipants(previous => [...previous]);
     } catch { if (currentSession()) setNotice(`Your ${kind === 'mic' ? 'microphone' : 'camera'} could not start. Tap its button to try again.`); }
-    finally { if (togglingDevice.current === room) togglingDevice.current = null; }
+    finally { if (togglingDevice.current === room) { togglingDevice.current = null; setDeviceBusy(false); } }
+  }
+  async function selectSource(kind: 'mic' | 'camera', deviceId: string) {
+    const room = call.current;
+    const capture = captureSession.current;
+    if (!room || !capture?.active || !devicesReady || togglingDevice.current === room || leaveRef.current) return;
+    const currentSession = () => call.current === room && captureSession.current === capture && capture.active && !leaveRef.current;
+    togglingDevice.current = room; setDeviceBusy(true);
+    const track = room.localParticipant.getTrackPublication(kind === 'mic' ? Track.Source.Microphone : Track.Source.Camera)?.track;
+    try {
+      const changed = await capture.switchDevice(track, () => room.switchActiveDevice(kind === 'mic' ? 'audioinput' : 'videoinput', deviceId));
+      if (!currentSession()) return;
+      if (!changed) throw new Error('Device did not change');
+      setSources(previous => ({ ...previous, [kind]: deviceId }));
+      setNotice(''); setParticipants(previous => [...previous]);
+    } catch {
+      if (currentSession()) setNotice(`Could not switch ${kind === 'mic' ? 'microphone' : 'camera'}. Check the device and choose a source again.`);
+    } finally {
+      if (togglingDevice.current === room) { togglingDevice.current = null; setDeviceBusy(false); }
+    }
   }
   const remote = participants.filter(participant => participant.identity !== joined?.identity);
   const local = participants.find(participant => participant.identity === joined?.identity);
@@ -355,8 +404,8 @@ export default function App() {
         <div className="footer-content">{watching && state?.movie ? <><strong>{contentTitle(state.movie)}</strong><span>{state.movie.episodeDetails || state.movie.year}{state.paused && !state.waiting ? ' · Paused' : ''}</span></> : <><strong>{joined.name}</strong><span>{joined.owner ? 'You’re hosting' : 'Just you and your people'}</span></>}</div>
         <div className="call-controls">
           <div className="call-device-controls">
-          <button className={`call-button${!mic ? ' device-off' : ''}`} disabled={!devicesReady} onClick={() => toggleDevice('mic')} aria-label={mic ? 'Mute microphone' : 'Turn on microphone'} aria-pressed={mic}>{mic ? <Microphone size={23} /> : <MicrophoneSlash size={23} />}</button>
-          <button className={`call-button${!camera ? ' device-off' : ''}`} disabled={!devicesReady} onClick={() => toggleDevice('camera')} aria-label={camera ? 'Turn off camera' : 'Turn on camera'} aria-pressed={camera}>{camera ? <VideoCamera size={23} /> : <VideoCameraSlash size={23} />}</button>
+          <div className="call-device-group"><button className={`call-button${!mic ? ' device-off' : ''}`} disabled={!devicesReady || deviceBusy} onClick={() => toggleDevice('mic')} aria-label={mic ? 'Mute microphone' : 'Turn on microphone'} aria-pressed={mic}>{mic ? <Microphone size={23} /> : <MicrophoneSlash size={23} />}</button><DevicePicker kind="mic" devices={devices} value={sources.mic} disabled={!devicesReady || deviceBusy} onChange={deviceId => selectSource('mic', deviceId)} /></div>
+          <div className="call-device-group"><button className={`call-button${!camera ? ' device-off' : ''}`} disabled={!devicesReady || deviceBusy} onClick={() => toggleDevice('camera')} aria-label={camera ? 'Turn off camera' : 'Turn on camera'} aria-pressed={camera}>{camera ? <VideoCamera size={23} /> : <VideoCameraSlash size={23} />}</button><DevicePicker kind="camera" devices={devices} value={sources.camera} disabled={!devicesReady || deviceBusy} onChange={deviceId => selectSource('camera', deviceId)} /></div>
           </div>
           <span className="controls-divider" />
           <button className="call-button hangup" onClick={leave} aria-label="Leave the call"><PhoneDisconnect size={25} weight="fill" /></button>

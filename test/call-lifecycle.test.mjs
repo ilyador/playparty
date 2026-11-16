@@ -47,6 +47,17 @@ function app(plans, timers = { setInterval, clearInterval }, initialState, sessi
   const document = { body: { appendChild(element) { audioOutputs.add(element); } }, fullscreenElement: null, visibilityState: 'visible',
     addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) };
   const media = { permissions: { query: async () => ({ state: 'granted' }) } };
+  const deviceEvents = new EventTarget();
+  media.mediaDevices = {
+    enumerateDevices: async () => [
+      { kind: 'audioinput', deviceId: 'mic-1', label: 'Microphone one' },
+      { kind: 'audioinput', deviceId: 'mic-2', label: 'Microphone two' },
+      { kind: 'videoinput', deviceId: 'camera-1', label: 'Camera one' },
+      { kind: 'videoinput', deviceId: 'camera-2', label: 'Camera two' },
+    ],
+    addEventListener: deviceEvents.addEventListener.bind(deviceEvents),
+    removeEventListener: deviceEvents.removeEventListener.bind(deviceEvents),
+  };
   const capture = module('call-capture.ts', {}, { navigator: media });
   const audio = module('call-audio.ts');
   const react = {
@@ -90,6 +101,14 @@ function app(plans, timers = { setInterval, clearInterval }, initialState, sessi
       rooms.push(this);
     }
     connect() { return this.plan.connection || Promise.resolve(); }
+    getActiveDevice(kind) { return this.localParticipant.activeDeviceMap.get(kind); }
+    async switchActiveDevice(kind, deviceId) {
+      this.switches ??= [];
+      this.switches.push({ kind, deviceId });
+      const success = await (this.plan.switchDevice?.(kind, deviceId) ?? true);
+      if (success) { this.localParticipant.activeDeviceMap.set(kind, deviceId); this.emit(RoomEvent.ActiveDeviceChanged, kind, deviceId); }
+      return success;
+    }
     startAudio() { return Promise.resolve(); }
     disconnect() {
       this.disconnections = (this.disconnections || 0) + 1;
@@ -103,7 +122,7 @@ function app(plans, timers = { setInterval, clearInterval }, initialState, sessi
     react,
     'react/jsx-runtime': { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }), Fragment: 'fragment' },
     'livekit-client': { Room: CallRoom, RoomEvent, Track, AudioPresets: {}, VideoPresets: {} },
-    '@phosphor-icons/react': {}, './Call': {}, './Library': {}, './Player': { default: 'player' },
+    '@phosphor-icons/react': {}, './Call': {}, './Library': {}, './Player': { default: 'player' }, './DevicePicker': { default: 'device-picker' },
     './call-capture': capture, './call-audio': audio, './movie-element': { createMovieElement: () => movie },
     './types': {
       contentTitle: content => content.title,
@@ -113,7 +132,7 @@ function app(plans, timers = { setInterval, clearInterval }, initialState, sessi
   }, {
     localStorage: { getItem: () => 'Test', setItem() {} }, location: { search: '', protocol: 'http:', host: 'localhost' },
     window: { addEventListener() {}, removeEventListener() {} },
-    document, performance,
+    document, performance, navigator: media,
     WebSocket: class {
       static OPEN = 1;
       readyState = 0; sent = [];
@@ -139,6 +158,7 @@ function app(plans, timers = { setInterval, clearInterval }, initialState, sessi
     visibility(value) { document.visibilityState = value; events.dispatchEvent(new Event('visibilitychange')); render(); },
     player: () => find(node => node.type === 'player', tree)?.props,
     button: label => find(node => node.type === 'button' && node.props['aria-label'] === label, tree).props,
+    source: kind => find(node => node.type === 'device-picker' && node.props.kind === kind, tree)?.props,
     notice: () => find(node => node.props?.className === 'notice', tree)?.props.children[0].props.children,
     joinError: () => find(node => node.props?.className === 'inline-error', tree)?.props.children,
     async join() { await find(node => node.type === 'form', tree).props.onSubmit({ preventDefault() {} }); render(); await flush(); render(); },
@@ -332,6 +352,54 @@ test('permission retries are owned across leave/rejoin, and old completion canno
   assert.equal(view.button('Mute microphone')['aria-pressed'], true);
   await view.button('Mute microphone').onClick();
   assert.equal(newMic[0].mediaStreamTrack.enabled, false);
+});
+
+test('source menus switch the requested inputs while preserving mic mute and camera-off state', async t => {
+  const initial = tracks();
+  const view = app([{ capture: async () => initial }]);
+  t.after(() => view.dispose());
+  await view.join();
+  assert.equal(view.source('mic').devices.filter(device => device.kind === 'audioinput').length, 2);
+  await view.source('mic').onChange('mic-2'); await flush(); view.render();
+  assert.equal(view.source('mic').value, 'mic-2');
+  assert.equal(view.button('Mute microphone')['aria-pressed'], true);
+  assert.equal(view.button('Turn off camera')['aria-pressed'], true);
+  await view.button('Mute microphone').onClick(); await flush(); view.render();
+  await view.button('Turn off camera').onClick(); await flush(); view.render();
+  await view.source('mic').onChange('mic-1'); await flush(); view.render();
+  await view.source('camera').onChange('camera-2'); await flush(); view.render();
+  assert.deepEqual(view.rooms[0].switches, [
+    { kind: 'audioinput', deviceId: 'mic-2' }, { kind: 'audioinput', deviceId: 'mic-1' }, { kind: 'videoinput', deviceId: 'camera-2' },
+  ]);
+  assert.equal(view.source('mic').value, 'mic-1');
+  assert.equal(view.source('camera').value, 'camera-2');
+  assert.equal(view.button('Turn on microphone')['aria-pressed'], false);
+  assert.equal(view.button('Turn on camera')['aria-pressed'], false);
+  assert.equal(initial[0].mediaStreamTrack.enabled, false);
+  assert.equal(initial[1].mediaStreamTrack.readyState, 'ended');
+  assert.equal(view.rooms[0].requests.length, 1, 'Selecting a source must not request another track publication.');
+});
+
+test('source switching locks competing changes, reports failures, and permits retry', async t => {
+  const pending = deferred();
+  let attempt = 0;
+  const view = app([{ capture: async () => tracks(), switchDevice: () => ++attempt === 1 ? pending.promise : true }]);
+  t.after(() => view.dispose());
+  await view.join();
+  const changing = view.source('camera').onChange('camera-2'); view.render();
+  assert.equal(view.source('mic').disabled, true);
+  assert.equal(view.button('Turn off camera').disabled, true);
+  assert.equal(view.button('Leave the call').disabled, undefined);
+  await view.source('mic').onChange('mic-2');
+  assert.equal(view.rooms[0].switches.length, 1);
+  pending.reject(new Error('Device unplugged'));
+  await changing; await flush(); view.render();
+  assert.match(view.notice(), /Could not switch camera/);
+  assert.equal(view.source('camera').disabled, false);
+  assert.notEqual(view.source('camera').value, 'camera-2');
+  await view.source('camera').onChange('camera-1'); await flush(); view.render();
+  assert.equal(view.notice(), undefined);
+  assert.equal(view.source('camera').value, 'camera-1');
 });
 
 test('a terminal disconnect disposes pending startup and keeps device controls disabled', async t => {

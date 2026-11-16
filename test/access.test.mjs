@@ -26,7 +26,7 @@ async function connectParty(server, cookie) {
   return socket;
 }
 
-test('configured Plex access enables hosting without identity checks, but only an explicit host choice grants controls', async () => {
+test('configured Plex access enables hosting without identity checks, but only an explicit host choice grants library and seek controls', async () => {
   const { request, close } = await hostApp(hostFixture());
   try {
     const session = await (await request('session')).json();
@@ -38,7 +38,8 @@ test('configured Plex access enables hosting without identity checks, but only a
       assert.equal((await joined.json()).owner, false);
       const cookie = joined.headers.get('set-cookie').split(';')[0];
       assert.equal((await request('library', undefined, cookie)).status, 403);
-      assert.equal((await request('control', { action: 'play' }, cookie)).status, 403);
+      assert.equal((await request('control', { action: 'play' }, cookie)).status, 200);
+      assert.equal((await request('control', { action: 'seek', position: 20 }, cookie)).status, 403);
     }
     const joined = await request('join', { name: 'Host', host: true });
     assert.equal(joined.status, 200);
@@ -62,6 +63,48 @@ test('unavailable Plex hides host eligibility and rejects host joins while guest
     assert.equal((await guest.json()).owner, false);
     assert.equal(probes, 2, 'Name-only joining does not require Plex availability.');
   } finally { await close(); }
+});
+
+test('viewers pause and resume the shared timeline without gaining seeking or host access', async () => {
+  let available = true;
+  const { request, party, server, close } = await hostApp(hostFixture({ canAccess: async () => available }));
+  const sockets = [];
+  try {
+    assert.equal((await request('control', { action: 'pause' })).status, 401);
+    const host = await request('join', { name: 'Host', host: true });
+    const viewer = await request('join', { name: 'Viewer' });
+    const hostCookie = host.headers.get('set-cookie').split(';')[0];
+    const viewerCookie = viewer.headers.get('set-cookie').split(';')[0];
+    const viewerId = (await viewer.json()).identity;
+    sockets.push(await connectParty(server, hostCookie), await connectParty(server, viewerCookie));
+    party.select({ id: 'movie', duration: 120 });
+    for (const member of party.members.values()) party.markReady(member.id, party.mediaVersion);
+    assert.equal(party.paused, false);
+    const version = party.mediaVersion;
+    available = false;
+    const paused = await request('control', { action: 'pause', position: 120 }, viewerCookie);
+    assert.equal(paused.status, 200);
+    const snapshot = await paused.json();
+    assert.equal(snapshot.paused, true);
+    assert.equal(snapshot.waiting, false);
+    assert.ok(snapshot.position < 5, 'A viewer cannot move playback by attaching a position to Pause.');
+    assert.equal(party.mediaVersion, version);
+    assert.equal(party.members.get(viewerId).owner, false);
+    const resumed = await request('control', { action: 'play', position: 95 }, viewerCookie);
+    assert.equal(resumed.status, 200);
+    assert.equal((await resumed.json()).paused, false);
+    for (const [route, body] of [['control', { action: 'seek', position: 95 }], ['stop', {}], ['select', { id: 'other' }], ['library']]) {
+      assert.equal((await request(route, body, viewerCookie)).status, 403);
+    }
+    // Pause must also cancel the shared wait when another member is buffering.
+    party.buffering(viewerId, version);
+    assert.equal(party.wantsPlay, true);
+    await request('control', { action: 'pause' }, viewerCookie);
+    assert.equal(party.wantsPlay, false);
+    assert.equal(party.paused, true);
+    await request('leave', {}, viewerCookie);
+    assert.equal((await request('control', { action: 'play' }, viewerCookie)).status, 401);
+  } finally { for (const socket of sockets) socket.close(); await close(); }
 });
 
 test('Plex availability is checked again after discovery and before every privileged operation', async () => {
@@ -241,7 +284,7 @@ test('host recognition delegates to an authenticated external session without ma
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('name-only guests cannot forge host status, browse the library, or control playback', async () => {
+test('name-only guests cannot forge host status, browse the library, or seek playback', async () => {
   const plex = { canAccess: async () => true, ownerName: 'Owner', streams: new Map(), resources: new Map(), stop: async () => {}, library: async () => [{ id: '1' }], token: 'test' };
   const { server, party } = createApp({ plex, authenticateOwner: async header => header?.includes('owner=test'), livekitKey: 'key', livekitSecret: 'test-secret-at-least-32-characters', origin: 'http://localhost:5175' });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -255,7 +298,8 @@ test('name-only guests cannot forge host status, browse the library, or control 
     assert.notEqual(body.identity, 'owner');
     assert.equal((await request('library', { headers: { Cookie: cookie } })).status, 403);
     assert.equal((await request('select', { method: 'POST', body: '{"id":"1"}', headers: { Cookie: cookie } })).status, 403);
-    assert.equal((await request('control', { method: 'POST', body: '{"action":"play"}', headers: { Cookie: cookie } })).status, 403);
+    assert.equal((await request('control', { method: 'POST', body: '{"action":"play"}', headers: { Cookie: cookie } })).status, 200);
+    assert.equal((await request('control', { method: 'POST', body: '{"action":"seek","position":20}', headers: { Cookie: cookie } })).status, 403);
     assert.equal((await request('stop', { method: 'POST', body: '{}', headers: { Cookie: cookie } })).status, 403);
     assert.equal((await request('join', { method: 'POST', body: '{"name":"Fake host","host":true}', headers: { Cookie: cookie } })).status, 403);
     const owner = await request('join', { method: 'POST', body: '{"name":"Host","host":true}', headers: { Cookie: 'owner=test' } });

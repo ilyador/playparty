@@ -11,6 +11,15 @@
         ],
         "createdAt": "2026-10-13T00:08:22.306Z",
         "reason": "Intentional workhorse UI face in the reviewed Playparty design: compact readable controls support the user’s pinned minimal dark call interface; the finish reviewer confirmed the typography matches the direction."
+      },
+      {
+        "rule": "design-system-radius",
+        "value": "9px",
+        "files": [
+          "src/style.css"
+        ],
+        "createdAt": "2026-11-16T09:52:12.192Z",
+        "reason": "Codex: the source selectors inherit the existing 9px mobile and landscape call-button corners in src/style.css; preserving the established control shape is intentional."
       }
     ]
   }

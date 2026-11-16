@@ -102,6 +102,14 @@ export function callCapture(participant: CaptureParticipant, onDiagnostic?: (sam
       }
       await acquireAndPublish(kind === 'mic', kind === 'camera');
     },
+    async switchDevice(previous: LocalTrack | undefined, change: () => Promise<boolean>) {
+      if (disposed) return false;
+      try { return await change(); }
+      finally {
+        // A device restart can resolve after Leave stopped the old capture.
+        if (disposed) previous?.stop();
+      }
+    },
     dispose() { disposed = true; stop(); },
   };
 }
