@@ -95,7 +95,7 @@ Near-black graphite surrounds the movie and faces. Soft off-white Geist keeps th
 
 The shipped interface uses one type family, restrained rounded rectangles, real Plex artwork, and functional Phosphor icons. Its density comes from the people and library content. It does not add decorative panels or a marketing layer around the call.
 
-The app icon pairs two chalk and muted-sage companion forms around a shared play-shaped opening on opaque graphite. Its simple, centered silhouette carries the room's identity onto the Home Screen and browser tab.
+The app icon is Screen Cat in the Ticket palette: an angular deep-plum television cat with an ivory screen, raspberry play symbol and folded accents, and a lavender-lilac background. Its bold origami silhouette brings the Linux/game character shared with Locdoc and Localcam to the Home Screen and browser tab.
 
 The name form includes an “I am the host” switch below the name field only when the machine running Playparty can access its configured Plex library. Its full label row is at least 44px high, with a 44×26px track and a 20px soft-white thumb. Off uses field-border gray; on uses the room’s quiet green. Keyboard focus outlines the track, and changes take 160ms. The switch starts off and stays completely hidden until access is verified, including when Plex is offline. Another hosted party with connected members disables the switch and shows “There is already an active session.” below it, linked through `aria-describedby`. When the empty party is retired, the switch becomes available without restoring a stale selection. Standalone hosting requires no browser Plex sign-in or email check. A configured external provider also requires an authenticated session; an optional underlined “Sign in to host” link, enabled only with `LOCAL_AUTH=true`, opens that existing login in the same window and preserves the entered name. Its interaction height is 44px. Home Screen installs keep login navigation on their own origin. The switch selects the role rather than granting permission.
 
@@ -171,7 +171,7 @@ The app icon is a full-bleed opaque square with no baked corner mask. Its essent
 
 ### App Icon
 
-Use the shipped companion/play artwork from `public/icons/`. Warm chalk and muted sage belong to the icon; its graphite background matches the room. The mark has no text, decorative ring, or outer shadow. The 180px Apple touch icon, 32px favicon, and 192px / 512px manifest variants share the same artwork. Exact generation provenance is recorded in `public/icons/README.md`.
+Use the shipped Screen Cat — Ticket palette artwork from `public/icons/`, sourced from `design/icon-options/02b-screen-cat-ticket.png`. The television body, pointed ears, folded tail, and feet use deep plum; the screen is warm ivory, the play triangle and fold returns are raspberry, and the full-bleed background is lavender-lilac. These colors belong to the icon and do not replace the room's functional palette. The 180px Apple touch icon, 32px favicon, and ordinary 192px / 512px manifest icons preserve the original framing. Separate maskable 192px / 512px exports center the artwork at 90% scale and extend the lilac background from its edges. The source artwork remains unchanged. Exact generation provenance is recorded in `public/icons/README.md`.
 
 ### Buttons
 

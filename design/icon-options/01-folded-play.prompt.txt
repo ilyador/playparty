@@ -1,0 +1,14 @@
+Use case: style-transfer
+Asset type: Playparty PWA app icon, one final square image.
+Primary request: Redesign Playparty's icon in the same bold origami / Linux-game style as the approved Localcam icon.
+
+Input image 1 is the EDIT TARGET and subject reference: the current Playparty logo, two companions joined around a right-pointing play-shaped negative space.
+Input image 2 is a STYLE AND COLOR REFERENCE ONLY: the approved Localcam Folded Iris icon. Match its clean angular folded-paper language, chunky forms, vivid harmonious palette and small triangular fold returns. Do not copy its aperture symbol.
+
+Brand idea: watching a movie together with friends. Retain a simple unmistakable pair of companions framing one shared right-facing play opening. Rebuild the current soft rounded bodies as two thick interlocking angular paper ribbons with deliberately chamfered bends and broad flat faces. One companion is warm cream and the other deep navy. Each has one simple small chamfered octagonal head above its ribbon body, in the matching body color. Suggest friendly two-player characters through their lean toward the shared play opening; no facial features or extra limbs. Integrate a few small coral reverse folds into the ribbon ends and overlaps. The result is a single strong compact emblem with a clear triangular open center and a readable two-person silhouette.
+
+Palette: match reference image 2 closely. Sunny golden apricot full-bleed background around #FFB76B, rich midnight navy around #172B43, luminous vanilla cream around #FFF8E7, vivid coral around #F45D57 confined to the small folded-back planes. The center play opening shows the apricot background. Clean saturated color, crisp light/dark contrast, no muddy brown or sage.
+Style: bold geometric origami, flat front-facing emblem, a few restrained fold shadows, nearly flat matte surfaces, no extruded blocks. Confident and playful, like a well-made Linux app or a retro game emblem. Match the sharp crafted feel of reference 2; no photorealism.
+Composition: centered square icon, complete emblem occupying approximately 68–72% of canvas width and height; all essential parts inside a circle of diameter 78% of the canvas. Generous clean margin and optical balance. Opaque square apricot background extending to every edge; platform will apply its own mask.
+Text: none.
+Constraints: exactly one icon, no words, letters, wordmark, watermark, swatches, presentation board, device frame or baked rounded outer corners. No camera/aperture, no film reel/clapperboard, no confetti, hearts, glitter, eyes, tiny decorative strokes, gradients, vignette, glossy highlights or outer drop shadow. Keep the two companions and the central play opening immediately legible at small app-icon sizes.

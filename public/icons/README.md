@@ -1,32 +1,41 @@
 # Playparty app icon
 
-Generated with the built-in image generation tool using the brandkit and imagegen skills. The mark pairs two companions around a shared play-shaped opening; chalk and muted sage sit on opaque graphite.
+The installed icon is **Screen Cat — Ticket palette**, the original purple Screen Cat selected on 2026-10-16. Its angular television-cat silhouette uses deep plum, an ivory screen, a raspberry play symbol and folded accents, and a lavender-lilac background. It shares Locdoc and Localcam's bold origami / Linux-game style.
+
+The unchanged generated source is [02b-screen-cat-ticket.png](../../design/icon-options/02b-screen-cat-ticket.png). It was created with built-in image editing using [Screen Cat](../../design/icon-options/02-screen-cat.png) as the edit target and [Ticket Link](../../design/icon-options/04-ticket-link.png) as the palette reference, with imagegen and brandkit guidance. The [exact edit prompt](../../design/icon-options/02b-screen-cat-ticket.prompt.txt) and [concept catalog](../../design/icon-options/README.md) preserve its provenance. The former companion icon is archived as [00-original.png](../../design/icon-options/00-original.png).
 
 Files:
-- `playparty-master-1024.png`: 1024px master artwork.
+
+- `playparty-master-1024.png`: 1024px production master.
 - `apple-touch-icon-180.png`: iOS Home Screen icon.
-- `playparty-192.png` and `playparty-512.png`: web app manifest icons.
+- `playparty-192.png` and `playparty-512.png`: ordinary web app manifest icons (`purpose: any`).
+- `playparty-maskable-192.png` and `playparty-maskable-512.png`: separate maskable manifest icons (`purpose: maskable`).
 - `favicon-32.png`: browser favicon.
 
-The PNGs are opaque squares without baked corner masks. Downsampling uses Pillow LANCZOS; the artwork is otherwise unchanged. Each PNG embeds the exact generation prompt as a `Generation prompt` text field.
+The PNGs are opaque squares without baked corner masks. ImageMagick Lanczos resampling creates the master, Apple touch, ordinary PWA, and favicon exports directly from the selected original. The maskable pair centers the artwork at 90% scale and extends the lilac background from its edges. The source colors and geometry are preserved, and the generated source in `design/icon-options/` remains unchanged. Each exported PNG records the exact `Generation prompt`, `Source artwork` reference, and `Export treatment` in its text metadata.
 
-## Generation prompt
+## Exact color-edit prompt
 
 ```text
-Use case: logo-brand
-Asset type: final Playparty app icon for iOS Home Screen and a Safari desktop web app, a single 1024 by 1024 square raster asset.
-Primary request: design one cool, quietly premium app icon for watching movies with friends. Make an original abstract Playparty symbol: two thick, gently rounded ribbon-like forms nest together around a crisp right-facing play-shaped negative space, subtly suggesting a pair of linked P forms and two people sharing a screen. The mark must feel ownable and reduced, visually readable even at favicon size.
-Scene/backdrop: opaque full-bleed flat graphite (#101113), extending all the way to all four square corners.
-Subject: one large centered simple geometric emblem. Dominant form in warm chalk (#E8E6E0), companion form in muted sage lime (#B8C49B). Crisp silhouette, generous 20 percent surrounding negative space, essential symbol fully within the central 70 percent. A single unified symbol with a clear shared center.
-Style/medium: high-end contemporary identity design; bold vector-like contours; calm cinematic character, precise smooth edges, restrained flat colors. No texture needed.
-Composition/framing: straight-on, perfectly square, the app artwork fills the entire image; no presentation board, no device frame, no mockup, no separate tile on a canvas.
-Text: none.
-Constraints: no letters or wordmark, no typography, no watermark, no shadows outside the symbol, no decorative rings, no glossy 3D, no generic gradient, no purple or blue glow, no film reel or clapperboard. No baked rounded outer corners; iOS and Safari apply their own masks. Opaque square background. One simple memorable centered mark.
+Use case: precise-object-edit
+Asset type: Playparty Screen Cat app-icon color variant.
+Primary request: Apply Ticket Link's colors to the Screen Cat design.
+
+Input image 1 is the EDIT TARGET: the cat-shaped TV icon with lime background, dark navy body, cream screen, and cobalt play triangle and folds.
+Input image 2 is the PALETTE REFERENCE ONLY: the two cinema tickets with lilac background, deep plum, warm ivory, and raspberry corners.
+
+Change ONLY the colors of image 1. Preserve the exact cat silhouette, TV proportions, screen inset, play-triangle shape and size, ears, tail, feet, fold boundaries, position, scale, framing and margins. Do not introduce any ticket geometry.
+Color mapping:
+- Replace the lime background with the same lively lavender-lilac as image 2, approximately #BAA3EB, extending to every edge.
+- Replace the navy cat body, outer frame, dark ear panels, tail and feet with the same deep plum ink as the front ticket in image 2, approximately #302641.
+- Keep the screen warm ivory matching image 2's cream ticket and play symbol, approximately #FFF6E0.
+- Replace every cobalt-blue area, including the large play triangle and the small folded faces on ears, tail tip and feet, with image 2's vivid raspberry, approximately #DF4E78.
+Preserve the restrained tonal fold shading using darker shades of these base colors. Keep the broad colors clean and matte. Match the reference palette closely.
+Constraints: Same design and composition; color transfer only. One opaque square icon. No added text, watermark, borders, swatches, shapes, gradients, outlines or decoration. No remaining lime, navy-blue or cobalt-blue hue.
 ```
 
 ## Safari and web app metadata
 
-The HTML links the 180px Apple touch icon and web app manifest, sets the Playparty Home Screen title, and enables standalone display. The manifest uses `display: standalone`, local root scope, and icons usable with ordinary and maskable presentation. No service worker is added.
+The HTML links the 180px Apple touch icon and web app manifest, sets the Playparty Home Screen title, and enables standalone display. The manifest preserves `/` as the app identity, start URL, and scope. Icon and manifest references use `v=screen-cat-ticket-20261016` to refresh browser assets; installed operating-system shortcuts may update on their own schedule. No service worker is added.
 
-Metadata references: [Apple: Configuring Web Applications](https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/SafariWebContent/ConfiguringWebApplications/ConfiguringWebApplications.html), [MDN: manifest icons](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Manifest/Reference/icons), [MDN: standalone display](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Manifest/Reference/display).
-
+Metadata references: [Apple: Configuring Web Applications](https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/SafariWebContent/ConfiguringWebApplications.html), [MDN: manifest icons](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Manifest/Reference/icons), [MDN: standalone display](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Manifest/Reference/display).

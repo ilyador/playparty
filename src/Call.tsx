@@ -16,11 +16,9 @@ export function Face({ participant, local = false, large = false }: { participan
     element.muted = true;
     return () => { track.detach(element); };
   }, [track]);
-  return <div className={`face${large ? ' face-large' : ''}`}>
+  return <div className={`face${large ? ' face-large' : ''}`} role="group" aria-label={`${name}${local ? ' (you)' : ''}`}>
     <video ref={video} autoPlay muted playsInline controls={false} disablePictureInPicture disableRemotePlayback className={`${visible ? 'visible' : ''}${local ? ' self-video' : ''}`} />
     {!visible && <div className="face-placeholder"><span className="initials">{initials}</span></div>}
-    <div className="face-caption"><span>{name}{local && <span className="you-label"> · You</span>}</span>
-      <span className="face-indicators">{!participant.isCameraEnabled && <VideoCameraSlash size={14} />}{!participant.isMicrophoneEnabled && <MicrophoneSlash size={14} />}</span>
-    </div>
+    {(!participant.isCameraEnabled || !participant.isMicrophoneEnabled) && <span className="face-indicators">{!participant.isCameraEnabled && <VideoCameraSlash size={14} aria-label="Camera off" />}{!participant.isMicrophoneEnabled && <MicrophoneSlash size={14} aria-label="Microphone muted" />}</span>}
   </div>;
 }
